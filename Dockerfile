@@ -2,21 +2,19 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copia solo el archivo .csproj a una carpeta con el mismo nombre que el proyecto
+# Copia solo el archivo .csproj desde la raíz del proyecto.
 # Esto es clave para que la caché de Docker funcione eficientemente.
-COPY ["FormBuilder.API/FormBuilder.API.csproj", "FormBuilder.API/"]
+COPY FormBuilder.API.csproj .
 
-# Restaura las dependencias del proyecto
-RUN dotnet restore "FormBuilder.API/FormBuilder.API.csproj"
+# Restaura las dependencias del proyecto.
+# No necesita ruta porque el .csproj ya está en el directorio de trabajo /src
+RUN dotnet restore
 
 # Copia todo el resto del código fuente del proyecto
 COPY . .
 
-# Cambia el directorio de trabajo al del proyecto antes de publicar
-WORKDIR "/src/FormBuilder.API"
-
 # Publica la aplicación. Se creará en /app/publish
-# El proyecto a publicar se infiere del directorio de trabajo actual
+# El proyecto a publicar se infiere porque solo hay uno en el directorio de trabajo.
 RUN dotnet publish -c Release -o /app/publish
 
 # ---
