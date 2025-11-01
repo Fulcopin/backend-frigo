@@ -7,15 +7,13 @@ WORKDIR /src
 COPY FormBuilder.API.csproj .
 
 # Restaura las dependencias del proyecto.
-# No necesita ruta porque el .csproj ya está en el directorio de trabajo /src
 RUN dotnet restore
 
 # Copia todo el resto del código fuente del proyecto
 COPY . .
 
-# Publica la aplicación. Se creará en /app/publish
-# El proyecto a publicar se infiere porque solo hay uno en el directorio de trabajo.
-RUN dotnet publish -c Release -o /app/publish
+# Publica la aplicación, ESPECIFICANDO el archivo .csproj para evitar ambigüedad.
+RUN dotnet publish "FormBuilder.API.csproj" -c Release -o /app/publish
 
 # ---
 
