@@ -1,3 +1,5 @@
+// Contenido para: Data/ApplicationDbContext.cs
+
 using FormBuilder.API.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,7 +13,9 @@ namespace FormBuilder.API.Data
 
         public DbSet<Template> Templates { get; set; }
         public DbSet<FilledForm> FilledForms { get; set; }
-        public DbSet<TableRow> TableRows { get; set; }
+        
+        // ANTERIOR: Este DbSet ya no es necesario.
+        // public DbSet<TableRow> TableRows { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

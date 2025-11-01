@@ -5,11 +5,6 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
-// ===== PASO 2: AÑADIR ESTAS LÍNEAS AQUÍ (Configuración de DB y CORS) =====
-
-// 2a. Configuración de CORS para permitir que tu app de React se conecte
 var MyAllowSpecificOrigins = "_myAllowSpecificOrigins";
 
 builder.Services.AddCors(options =>
@@ -47,11 +42,20 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
 
-// ===== PASO 3: AÑADIR ESTA LÍNEA AQUÍ (Para activar CORS) =====
+// ====================== INICIO DE LA CORRECCIÓN ======================
+// El orden aquí es CRÍTICO.
+// La política de CORS debe aplicarse ANTES de la redirección a HTTPS.
+// De esta forma, el servidor puede responder correctamente a las peticiones
+// de "pre-vuelo" (preflight) sin intentar redirigirlas.
+
+// PASO 1: Activar CORS.
 app.UseCors(MyAllowSpecificOrigins);
-// ==========================================================
+
+// PASO 2: (Opcional pero recomendado) Redirigir a HTTPS.
+//app.UseHttpsRedirection();
+// ======================= FIN DE LA CORRECCIÓN ========================
+
 
 app.UseAuthorization();
 

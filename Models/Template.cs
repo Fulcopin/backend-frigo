@@ -1,3 +1,5 @@
+// Contenido para: Models/Template.cs
+
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -27,8 +29,13 @@ namespace FormBuilder.API.Models
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderFields { get; set; }
 
+        // ANTERIOR:
+        // [Column(TypeName = "nvarchar(max)")]
+        // public string? TableColumns { get; set; }
+
+        // NUEVO: Renombrado para almacenar la nueva estructura dinámica del cuerpo.
         [Column(TypeName = "nvarchar(max)")]
-        public string? TableColumns { get; set; }
+        public string? BodyElements { get; set; }
 
         [Column(TypeName = "nvarchar(max)")]
         public string? Firmas { get; set; }

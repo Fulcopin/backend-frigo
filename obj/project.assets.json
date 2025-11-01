@@ -4780,11 +4780,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\fupifigu\\Pictures\\proyect\\FormBuilder.API\\FormBuilder.API.csproj",
+      "projectUniqueName": "C:\\Users\\fupifigu\\Pictures\\proyect\\backend-frigo\\FormBuilder.API.csproj",
       "projectName": "FormBuilder.API",
-      "projectPath": "C:\\Users\\fupifigu\\Pictures\\proyect\\FormBuilder.API\\FormBuilder.API.csproj",
+      "projectPath": "C:\\Users\\fupifigu\\Pictures\\proyect\\backend-frigo\\FormBuilder.API.csproj",
       "packagesPath": "C:\\Users\\fupifigu\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\fupifigu\\Pictures\\proyect\\FormBuilder.API\\obj\\",
+      "outputPath": "C:\\Users\\fupifigu\\Pictures\\proyect\\backend-frigo\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\fupifigu\\AppData\\Roaming\\NuGet\\NuGet.Config"

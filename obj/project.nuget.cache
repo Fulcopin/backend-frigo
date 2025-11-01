@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "8T5tpEqPlq8=",
+  "dgSpecHash": "JIPbM8CQvbQ=",
   "success": true,
-  "projectFilePath": "C:\\Users\\fupifigu\\Pictures\\proyect\\FormBuilder.API\\FormBuilder.API.csproj",
+  "projectFilePath": "C:\\Users\\fupifigu\\Pictures\\proyect\\backend-frigo\\FormBuilder.API.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\fupifigu\\.nuget\\packages\\azure.core\\1.38.0\\azure.core.1.38.0.nupkg.sha512",
     "C:\\Users\\fupifigu\\.nuget\\packages\\azure.identity\\1.11.4\\azure.identity.1.11.4.nupkg.sha512",
