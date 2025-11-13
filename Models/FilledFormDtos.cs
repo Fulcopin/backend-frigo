@@ -2,12 +2,6 @@
 
 namespace FormBuilder.API.Models
 {
-    // ANTERIOR: Este DTO ya no es necesario.
-    // public class TableRowInputDto
-    // {
-    //     public string RowData { get; set; } = string.Empty;
-    // }
-
     // DTO actualizado para la petición POST de un nuevo formulario
     public class FilledFormInputDto
     {
@@ -19,8 +13,5 @@ namespace FormBuilder.API.Models
 
         public string FirmasData { get; set; } = string.Empty;
         public string? Observaciones { get; set; }
-
-        // ANTERIOR: La colección de filas se elimina.
-        // public ICollection<TableRowInputDto> TableRows { get; set; } = new List<TableRowInputDto>();
     }
 }
