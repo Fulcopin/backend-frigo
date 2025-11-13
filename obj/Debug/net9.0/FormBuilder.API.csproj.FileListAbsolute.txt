@@ -323,3 +323,6 @@ C:\Users\fupifigu\Pictures\proyect\backend-frigo\obj\Debug\net9.0\refint\FormBui
 C:\Users\fupifigu\Pictures\proyect\backend-frigo\obj\Debug\net9.0\FormBuilder.API.pdb
 C:\Users\fupifigu\Pictures\proyect\backend-frigo\obj\Debug\net9.0\FormBuilder.API.genruntimeconfig.cache
 C:\Users\fupifigu\Pictures\proyect\backend-frigo\obj\Debug\net9.0\ref\FormBuilder.API.dll
+C:\Users\fupifigu\Pictures\proyect\backend-frigo\bin\Debug\net9.0\filled-form-control-etiquetas.json
+C:\Users\fupifigu\Pictures\proyect\backend-frigo\bin\Debug\net9.0\template-control-etiquetas.json
+C:\Users\fupifigu\Pictures\proyect\backend-frigo\bin\Debug\net9.0\template-postman.json

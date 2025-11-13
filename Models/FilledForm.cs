@@ -12,7 +12,7 @@ namespace FormBuilder.API.Models
 
         public int TemplateID { get; set; }
         [ForeignKey("TemplateID")]
-        public virtual Template Template { get; set; }
+        public virtual Template? Template { get; set; }
 
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderData { get; set; }
@@ -28,8 +28,6 @@ namespace FormBuilder.API.Models
         public string? Observaciones { get; set; }
         
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-
-        // ANTERIOR: La relación directa con TableRow se elimina.
-        // public virtual ICollection<TableRow> TableRows { get; set; }
+        public DateTime? UpdatedAt { get; set; }
     }
 }

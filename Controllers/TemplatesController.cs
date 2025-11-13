@@ -57,6 +57,38 @@ namespace FormBuilder.API.Controllers
             return template;
         }
 
+        // NUEVO: Endpoint para crear template con 5 columnas por defecto
+        [HttpGet("{id}/with-default-columns")]
+        public async Task<ActionResult<object>> GetTemplateWithDefaultColumns(int id)
+        {
+            var template = await _context.Templates.FindAsync(id);
+
+            if (template == null)
+            {
+                return NotFound();
+            }
+
+            // Crear estructura por defecto con 5 columnas si no existe BodyElements
+            var defaultBodyElements = template.BodyElements ?? GenerateDefault5ColumnStructure();
+
+            return Ok(new
+            {
+                template.TemplateID,
+                template.Codigo,
+                template.Nombre,
+                template.Version,
+                template.Objetivo,
+                template.Proceso,
+                template.CuandoSeUsa,
+                template.QuienLoLlena,
+                template.HeaderFields,
+                BodyElements = defaultBodyElements,
+                template.Firmas,
+                template.CreatedAt,
+                template.UpdatedAt
+            });
+        }
+
         //==============================================================
         // MÉTODO POST - Para crear una NUEVA plantilla
         // URL: POST /api/Templates
@@ -93,6 +125,9 @@ namespace FormBuilder.API.Controllers
             {
                 return BadRequest();
             }
+
+            // Actualizar la fecha de modificación
+            template.UpdatedAt = DateTime.UtcNow;
 
             // Le dice a Entity Framework que este objeto 'template' no es nuevo,
             // sino que representa una versión modificada de una fila que ya existe.
@@ -151,6 +186,62 @@ namespace FormBuilder.API.Controllers
         private bool TemplateExists(int id)
         {
             return _context.Templates.Any(e => e.TemplateID == id);
+        }
+
+        // NUEVO: Método helper para generar estructura de 5 columnas por defecto
+        private string GenerateDefault5ColumnStructure()
+        {
+            var defaultStructure = new
+            {
+                sections = new[]
+                {
+                    new
+                    {
+                        id = "section-1",
+                        title = "Datos Principales",
+                        type = "table",
+                        columns = new[]
+                        {
+                            new { id = "col1", name = "Columna 1", type = "text" },
+                            new { id = "col2", name = "Columna 2", type = "text" },
+                            new { id = "col3", name = "Columna 3", type = "text" },
+                            new { id = "col4", name = "Columna 4", type = "text" },
+                            new { id = "col5", name = "Columna 5", type = "text" }
+                        },
+                        rows = new object[0] // Array vacío inicialmente
+                    }
+                }
+            };
+
+            return System.Text.Json.JsonSerializer.Serialize(defaultStructure);
+        }
+
+        // NUEVO: Método helper para generar datos de formulario con 5 columnas por defecto
+        private string GenerateDefault5ColumnData()
+        {
+            var defaultData = new
+            {
+                sections = new[]
+                {
+                    new
+                    {
+                        id = "section-1",
+                        data = new[]
+                        {
+                            new
+                            {
+                                col1 = "",
+                                col2 = "",
+                                col3 = "",
+                                col4 = "",
+                                col5 = ""
+                            }
+                        }
+                    }
+                }
+            };
+
+            return System.Text.Json.JsonSerializer.Serialize(defaultData);
         }
     }
 }
