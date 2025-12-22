@@ -13,6 +13,7 @@ namespace FormBuilder.API.Data
 
         public DbSet<Template> Templates { get; set; }
         public DbSet<FilledForm> FilledForms { get; set; }
+        public DbSet<SourceForm> SourceForms { get; set; }
         
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }

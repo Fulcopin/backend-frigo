@@ -48,6 +48,13 @@ namespace FormBuilder.API.Migrations
                     b.Property<int>("TemplateID")
                         .HasColumnType("int");
 
+                    b.Property<string>("TemplateSnapshot")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TemplateVersion")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime2");
 

@@ -243,5 +243,339 @@ namespace FormBuilder.API.Controllers
 
             return System.Text.Json.JsonSerializer.Serialize(defaultData);
         }
+
+        //==============================================================
+        // HISTORIAL DE VERSIONES - Endpoints para ventana de versiones
+        //==============================================================
+
+        // GET: api/Templates/5/versions/history
+        // Obtiene el historial de todas las versiones usadas de un template
+        [HttpGet("{id}/versions/history")]
+        public async Task<ActionResult<IEnumerable<TemplateVersionHistoryDto>>> GetTemplateVersionHistory(int id)
+        {
+            // Verificar que el template existe
+            var templateExists = await _context.Templates.AnyAsync(t => t.TemplateID == id);
+            if (!templateExists)
+            {
+                return NotFound(new { message = $"Template con ID {id} no encontrado" });
+            }
+
+            // Obtener la versión actual del template
+            var currentTemplate = await _context.Templates.FindAsync(id);
+            var currentVersion = currentTemplate?.Version ?? "1.0";
+
+            // Agrupar formularios por versión del template
+            var versionHistory = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion != null)
+                .GroupBy(f => f.TemplateVersion)
+                .Select(g => new TemplateVersionHistoryDto
+                {
+                    Version = g.Key ?? "Desconocida",
+                    FirstUsedDate = g.Min(f => f.CreatedAt),
+                    LastUsedDate = g.Max(f => f.CreatedAt),
+                    FormCount = g.Count(),
+                    IsCurrentVersion = g.Key == currentVersion
+                })
+                .OrderByDescending(v => v.FirstUsedDate)
+                .ToListAsync();
+
+            // Si no hay formularios guardados, mostrar al menos la versión actual
+            if (!versionHistory.Any())
+            {
+                versionHistory.Add(new TemplateVersionHistoryDto
+                {
+                    Version = currentVersion,
+                    FirstUsedDate = currentTemplate?.CreatedAt,
+                    LastUsedDate = null,
+                    FormCount = 0,
+                    IsCurrentVersion = true
+                });
+            }
+
+            return Ok(versionHistory);
+        }
+
+        // GET: api/Templates/5/versions/02-01
+        // Obtiene los detalles de una versión específica y sus formularios
+        [HttpGet("{id}/versions/{version}")]
+        public async Task<ActionResult<TemplateVersionDetailDto>> GetVersionDetail(int id, string version)
+        {
+            // Obtener template actual
+            var currentTemplate = await _context.Templates.FindAsync(id);
+            if (currentTemplate == null)
+            {
+                return NotFound(new { message = $"Template con ID {id} no encontrado" });
+            }
+
+            // Obtener formularios con esta versión
+            var formsWithVersion = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion == version)
+                .Select(f => new FormSummaryDto
+                {
+                    FormID = f.FormID,
+                    CreatedAt = f.CreatedAt,
+                    HeaderData = f.HeaderData,
+                    Observaciones = f.Observaciones
+                })
+                .OrderByDescending(f => f.CreatedAt)
+                .ToListAsync();
+
+            // Si es la versión actual, usar el template actual
+            if (version == currentTemplate.Version)
+            {
+                return Ok(new TemplateVersionDetailDto
+                {
+                    Version = currentTemplate.Version ?? "1.0",
+                    TemplateID = currentTemplate.TemplateID,
+                    Codigo = currentTemplate.Codigo ?? "",
+                    Nombre = currentTemplate.Nombre ?? "",
+                    Objetivo = currentTemplate.Objetivo,
+                    Proceso = currentTemplate.Proceso,
+                    HeaderFields = currentTemplate.HeaderFields,
+                    BodyElements = currentTemplate.BodyElements,
+                    Firmas = currentTemplate.Firmas,
+                    AssociatedForms = formsWithVersion
+                });
+            }
+
+            // Si es una versión antigua, buscar en el snapshot del primer formulario
+            var firstFormWithVersion = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion == version && f.TemplateSnapshot != null)
+                .OrderBy(f => f.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (firstFormWithVersion?.TemplateSnapshot != null)
+            {
+                try
+                {
+                    // Deserializar el snapshot para obtener la estructura antigua
+                    var snapshot = System.Text.Json.JsonSerializer.Deserialize<Template>(firstFormWithVersion.TemplateSnapshot);
+                    
+                    if (snapshot != null)
+                    {
+                        return Ok(new TemplateVersionDetailDto
+                        {
+                            Version = version,
+                            TemplateID = id,
+                            Codigo = snapshot.Codigo ?? "",
+                            Nombre = snapshot.Nombre ?? "",
+                            Objetivo = snapshot.Objetivo,
+                            Proceso = snapshot.Proceso,
+                            HeaderFields = snapshot.HeaderFields,
+                            BodyElements = snapshot.BodyElements,
+                            Firmas = snapshot.Firmas,
+                            AssociatedForms = formsWithVersion
+                        });
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // Si falla la deserialización, continuar con fallback
+                }
+            }
+
+            // Fallback: devolver estructura básica con los formularios
+            return Ok(new TemplateVersionDetailDto
+            {
+                Version = version,
+                TemplateID = id,
+                Codigo = currentTemplate.Codigo ?? "",
+                Nombre = $"{currentTemplate.Nombre} (Versión {version})",
+                Objetivo = "Snapshot no disponible - versión histórica",
+                Proceso = currentTemplate.Proceso,
+                HeaderFields = null,
+                BodyElements = null,
+                Firmas = null,
+                AssociatedForms = formsWithVersion
+            });
+        }
+
+        // GET: api/Templates/5/versions/compare?oldVersion=02-01&newVersion=03-01
+        // Compara dos versiones de un template
+        [HttpGet("{id}/versions/compare")]
+        public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
+            int id, 
+            [FromQuery] string oldVersion, 
+            [FromQuery] string newVersion)
+        {
+            if (string.IsNullOrEmpty(oldVersion) || string.IsNullOrEmpty(newVersion))
+            {
+                return BadRequest(new { message = "Se requieren oldVersion y newVersion como parámetros" });
+            }
+
+            // Verificar que el template existe
+            var currentTemplate = await _context.Templates.FindAsync(id);
+            if (currentTemplate == null)
+            {
+                return NotFound(new { message = $"Template con ID {id} no encontrado" });
+            }
+
+            // Obtener detalles de la versión antigua
+            TemplateVersionDetailDto? oldData = null;
+            if (oldVersion == currentTemplate.Version)
+            {
+                // Versión actual
+                oldData = await GetVersionDetailInternal(id, oldVersion, currentTemplate);
+            }
+            else
+            {
+                // Versión histórica
+                oldData = await GetVersionDetailInternal(id, oldVersion, currentTemplate);
+            }
+
+            // Obtener detalles de la versión nueva
+            TemplateVersionDetailDto? newData = null;
+            if (newVersion == currentTemplate.Version)
+            {
+                // Versión actual
+                newData = await GetVersionDetailInternal(id, newVersion, currentTemplate);
+            }
+            else
+            {
+                // Versión histórica
+                newData = await GetVersionDetailInternal(id, newVersion, currentTemplate);
+            }
+
+            if (oldData == null || newData == null)
+            {
+                return NotFound(new { message = "Una o ambas versiones no encontradas" });
+            }
+
+            var comparison = new VersionComparisonDto
+            {
+                OldVersion = oldVersion,
+                NewVersion = newVersion,
+                ComparisonDate = DateTime.UtcNow,
+                Changes = new List<string>()
+            };
+
+            // Comparar campos
+            if (oldData.Nombre != newData.Nombre)
+                comparison.Changes.Add($"Nombre: '{oldData.Nombre}' → '{newData.Nombre}'");
+
+            if (oldData.Objetivo != newData.Objetivo)
+                comparison.Changes.Add($"Objetivo: '{oldData.Objetivo}' → '{newData.Objetivo}'");
+
+            if (oldData.Proceso != newData.Proceso)
+                comparison.Changes.Add($"Proceso: '{oldData.Proceso}' → '{newData.Proceso}'");
+
+            if (oldData.HeaderFields != newData.HeaderFields)
+                comparison.Changes.Add("HeaderFields: Estructura modificada");
+
+            if (oldData.BodyElements != newData.BodyElements)
+                comparison.Changes.Add("BodyElements: Estructura de tabla modificada");
+
+            if (oldData.Firmas != newData.Firmas)
+                comparison.Changes.Add("Firmas: Estructura de firmas modificada");
+
+            if (!comparison.Changes.Any())
+                comparison.Changes.Add("No se detectaron cambios entre versiones");
+
+            return Ok(comparison);
+        }
+
+        // Método helper interno para obtener detalles de versión sin ActionResult
+        private async Task<TemplateVersionDetailDto?> GetVersionDetailInternal(int id, string version, Template currentTemplate)
+        {
+            // Obtener formularios con esta versión
+            var formsWithVersion = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion == version)
+                .Select(f => new FormSummaryDto
+                {
+                    FormID = f.FormID,
+                    CreatedAt = f.CreatedAt,
+                    HeaderData = f.HeaderData,
+                    Observaciones = f.Observaciones
+                })
+                .OrderByDescending(f => f.CreatedAt)
+                .ToListAsync();
+
+            // Si es la versión actual, usar el template actual
+            if (version == currentTemplate.Version)
+            {
+                return new TemplateVersionDetailDto
+                {
+                    Version = currentTemplate.Version ?? "1.0",
+                    TemplateID = currentTemplate.TemplateID,
+                    Codigo = currentTemplate.Codigo ?? "",
+                    Nombre = currentTemplate.Nombre ?? "",
+                    Objetivo = currentTemplate.Objetivo,
+                    Proceso = currentTemplate.Proceso,
+                    HeaderFields = currentTemplate.HeaderFields,
+                    BodyElements = currentTemplate.BodyElements,
+                    Firmas = currentTemplate.Firmas,
+                    AssociatedForms = formsWithVersion
+                };
+            }
+
+            // Si es una versión antigua, buscar en el snapshot del primer formulario
+            var firstFormWithVersion = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion == version && f.TemplateSnapshot != null)
+                .OrderBy(f => f.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (firstFormWithVersion?.TemplateSnapshot != null)
+            {
+                try
+                {
+                    // Deserializar el snapshot para obtener la estructura antigua
+                    var snapshot = System.Text.Json.JsonSerializer.Deserialize<Template>(firstFormWithVersion.TemplateSnapshot);
+                    
+                    if (snapshot != null)
+                    {
+                        return new TemplateVersionDetailDto
+                        {
+                            Version = version,
+                            TemplateID = id,
+                            Codigo = snapshot.Codigo ?? "",
+                            Nombre = snapshot.Nombre ?? "",
+                            Objetivo = snapshot.Objetivo,
+                            Proceso = snapshot.Proceso,
+                            HeaderFields = snapshot.HeaderFields,
+                            BodyElements = snapshot.BodyElements,
+                            Firmas = snapshot.Firmas,
+                            AssociatedForms = formsWithVersion
+                        };
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // Si falla la deserialización, continuar con fallback
+                }
+            }
+
+            // Fallback: devolver estructura básica con los formularios
+            return new TemplateVersionDetailDto
+            {
+                Version = version,
+                TemplateID = id,
+                Codigo = currentTemplate.Codigo ?? "",
+                Nombre = $"{currentTemplate.Nombre} (Versión {version})",
+                Objetivo = "Snapshot no disponible - versión histórica",
+                Proceso = currentTemplate.Proceso,
+                HeaderFields = null,
+                BodyElements = null,
+                Firmas = null,
+                AssociatedForms = formsWithVersion
+            };
+        }
+
+        // GET: api/Templates/5/versions/02-01/forms
+        // Obtiene SOLO los formularios de una versión específica (endpoint simplificado)
+        [HttpGet("{id}/versions/{version}/forms")]
+        public async Task<ActionResult<IEnumerable<FilledForm>>> GetFormsByVersion(int id, string version)
+        {
+            var forms = await _context.FilledForms
+                .Where(f => f.TemplateID == id && f.TemplateVersion == version)
+                .OrderByDescending(f => f.CreatedAt)
+                .ToListAsync();
+
+            if (!forms.Any())
+            {
+                return Ok(new List<FilledForm>()); // Devolver lista vacía en lugar de 404
+            }
+
+            return Ok(forms);
+        }
     }
 }

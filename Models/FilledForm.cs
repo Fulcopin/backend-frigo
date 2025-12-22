@@ -14,6 +14,14 @@ namespace FormBuilder.API.Models
         [ForeignKey("TemplateID")]
         public virtual Template? Template { get; set; }
 
+        // NUEVO: Versionamiento - Snapshot del template al momento de creación
+        [Column(TypeName = "nvarchar(max)")]
+        public string? TemplateSnapshot { get; set; }
+
+        // NUEVO: Versión específica del template utilizada
+        [StringLength(20)]
+        public string? TemplateVersion { get; set; }
+
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderData { get; set; }
         
