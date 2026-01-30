@@ -14,6 +14,7 @@ namespace FormBuilder.API.Data
         public DbSet<Template> Templates { get; set; }
         public DbSet<FilledForm> FilledForms { get; set; }
         public DbSet<SourceForm> SourceForms { get; set; }
+        public DbSet<TemplateVersion> TemplateVersions { get; set; } // ✅ NUEVO: Historial de versiones
         
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }

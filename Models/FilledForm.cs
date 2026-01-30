@@ -22,6 +22,9 @@ namespace FormBuilder.API.Models
         [StringLength(20)]
         public string? TemplateVersion { get; set; }
 
+        // NUEVO: Fecha de la versión del template
+        public DateTime? FechaVersion { get; set; }
+
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderData { get; set; }
         

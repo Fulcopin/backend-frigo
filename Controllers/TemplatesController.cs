@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
-
+using System.Text.Json; // ✅ Esto quita el error de JsonSerializer
 namespace FormBuilder.API.Controllers
 {
     // [Route] define la URL base para este controlador. Todas las peticiones
@@ -116,47 +116,54 @@ namespace FormBuilder.API.Controllers
         // MÉTODO PUT - Para actualizar una plantilla existente
         // URL: PUT /api/Templates/5
         //==============================================================
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutTemplate(int id, [FromBody] Template template)
+       [HttpPut("{id}")]
+public async Task<IActionResult> PutTemplate(int id, [FromBody] Template template)
+{
+    if (id != template.TemplateID) return BadRequest();
+
+    // Obtener la versión que está actualmente en la base de datos (sin tracking para comparar)
+    var oldTemplate = await _context.Templates.AsNoTracking().FirstOrDefaultAsync(t => t.TemplateID == id);
+    if (oldTemplate == null) return NotFound();
+
+    // 🎯 DETECCIÓN TOTAL DE CAMBIOS
+    // Comparamos cada propiedad. Si el JSON cambió (aunque sea una coma), se detecta.
+    bool cambioAlgo = 
+        oldTemplate.Nombre != template.Nombre ||
+        oldTemplate.Objetivo != template.Objetivo ||
+        oldTemplate.Proceso != template.Proceso ||
+        oldTemplate.FechaVersion != template.FechaVersion ||
+        oldTemplate.Version != template.Version ||
+        oldTemplate.HeaderFields != template.HeaderFields ||
+        oldTemplate.BodyElements != template.BodyElements ||
+        oldTemplate.Firmas != template.Firmas;
+
+    if (cambioAlgo)
+    {
+        // Guardamos el estado ANTERIOR en el historial antes de actualizar a lo NUEVO
+        var historyEntry = new TemplateVersion
         {
-            // Comprobación de seguridad: si el ID en la URL no coincide con el
-            // ID del objeto que se está enviando, es una petición incorrecta.
-            if (id != template.TemplateID)
-            {
-                return BadRequest();
-            }
+            TemplateID = oldTemplate.TemplateID,
+            Version = oldTemplate.Version,
+            FechaVersion = oldTemplate.FechaVersion,
+            Codigo = oldTemplate.Codigo,
+            Nombre = oldTemplate.Nombre,
+            Objetivo = oldTemplate.Objetivo,
+            Proceso = oldTemplate.Proceso,
+            HeaderFields = oldTemplate.HeaderFields,
+            BodyElements = oldTemplate.BodyElements,
+            Firmas = oldTemplate.Firmas,
+            CreatedAt = DateTime.UtcNow,
+            ChangeDescription = "Actualización de estructura/datos detectada"
+        };
+        _context.TemplateVersions.Add(historyEntry);
+    }
 
-            // Actualizar la fecha de modificación
-            template.UpdatedAt = DateTime.UtcNow;
+    template.UpdatedAt = DateTime.UtcNow;
+    _context.Entry(template).State = EntityState.Modified;
+    await _context.SaveChangesAsync();
 
-            // Le dice a Entity Framework que este objeto 'template' no es nuevo,
-            // sino que representa una versión modificada de una fila que ya existe.
-            _context.Entry(template).State = EntityState.Modified;
-
-            try
-            {
-                // Intenta guardar los cambios en la base de datos.
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // Este error puede ocurrir si alguien borró la plantilla justo
-                // mientras intentábamos actualizarla.
-                if (!TemplateExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            // Devuelve una respuesta "204 No Content", que es el estándar para
-            // indicar que la actualización se realizó con éxito.
-            return NoContent();
-        }
-        
+    return NoContent();
+}
         //==============================================================
         // MÉTODO DELETE - Para borrar una plantilla
         // URL: DELETE /api/Templates/5
@@ -249,7 +256,7 @@ namespace FormBuilder.API.Controllers
         //==============================================================
 
         // GET: api/Templates/5/versions/history
-        // Obtiene el historial de todas las versiones usadas de un template
+        // Obtiene el historial de todas las versiones de un template
         [HttpGet("{id}/versions/history")]
         public async Task<ActionResult<IEnumerable<TemplateVersionHistoryDto>>> GetTemplateVersionHistory(int id)
         {
@@ -264,28 +271,67 @@ namespace FormBuilder.API.Controllers
             var currentTemplate = await _context.Templates.FindAsync(id);
             var currentVersion = currentTemplate?.Version ?? "1.0";
 
-            // Agrupar formularios por versión del template
-            var versionHistory = await _context.FilledForms
-                .Where(f => f.TemplateID == id && f.TemplateVersion != null)
-                .GroupBy(f => f.TemplateVersion)
+            // ✅ NUEVO: Obtener el historial desde la tabla TemplateVersions
+            var versionHistory = await _context.TemplateVersions
+                .Where(tv => tv.TemplateID == id)
+                .GroupBy(tv => tv.Version)
                 .Select(g => new TemplateVersionHistoryDto
                 {
-                    Version = g.Key ?? "Desconocida",
-                    FirstUsedDate = g.Min(f => f.CreatedAt),
-                    LastUsedDate = g.Max(f => f.CreatedAt),
-                    FormCount = g.Count(),
-                    IsCurrentVersion = g.Key == currentVersion
+                    Version = g.Key,
+                    VersionCreatedAt = g.Max(tv => tv.CreatedAt),
+                    FechaVersion = g.OrderByDescending(tv => tv.CreatedAt).FirstOrDefault()!.FechaVersion, // ✅ Fecha de versión
+                    ChangeDescription = g.OrderByDescending(tv => tv.CreatedAt).FirstOrDefault()!.ChangeDescription,
+                    IsCurrentVersion = false, // Se marcará después
+                    // Contar formularios que usan esta versión
+                    FormCount = _context.FilledForms.Count(f => f.TemplateID == id && f.TemplateVersion == g.Key),
+                    FirstUsedDate = _context.FilledForms
+                        .Where(f => f.TemplateID == id && f.TemplateVersion == g.Key)
+                        .Min(f => (DateTime?)f.CreatedAt),
+                    LastUsedDate = _context.FilledForms
+                        .Where(f => f.TemplateID == id && f.TemplateVersion == g.Key)
+                        .Max(f => (DateTime?)f.CreatedAt)
                 })
-                .OrderByDescending(v => v.FirstUsedDate)
                 .ToListAsync();
 
-            // Si no hay formularios guardados, mostrar al menos la versión actual
+            // ✅ NUEVO: Agregar la versión actual si no está en el historial
+            var currentVersionExists = versionHistory.Any(v => v.Version == currentVersion);
+            if (!currentVersionExists)
+            {
+                versionHistory.Insert(0, new TemplateVersionHistoryDto
+                {
+                    Version = currentVersion,
+                    VersionCreatedAt = currentTemplate?.UpdatedAt ?? currentTemplate?.CreatedAt,
+                    FechaVersion = currentTemplate?.FechaVersion, // ✅ Fecha de versión actual
+                    ChangeDescription = "Versión actual en uso",
+                    IsCurrentVersion = true,
+                    FormCount = _context.FilledForms.Count(f => f.TemplateID == id && f.TemplateVersion == currentVersion),
+                    FirstUsedDate = _context.FilledForms
+                        .Where(f => f.TemplateID == id && f.TemplateVersion == currentVersion)
+                        .Min(f => (DateTime?)f.CreatedAt),
+                    LastUsedDate = _context.FilledForms
+                        .Where(f => f.TemplateID == id && f.TemplateVersion == currentVersion)
+                        .Max(f => (DateTime?)f.CreatedAt)
+                });
+            }
+            else
+            {
+                // Marcar la versión actual
+                var current = versionHistory.First(v => v.Version == currentVersion);
+                current.IsCurrentVersion = true;
+            }
+
+            // Ordenar por fecha de creación descendente (más reciente primero)
+            versionHistory = versionHistory.OrderByDescending(v => v.VersionCreatedAt).ToList();
+
+            // Si no hay ninguna versión (plantilla completamente nueva sin historial)
             if (!versionHistory.Any())
             {
                 versionHistory.Add(new TemplateVersionHistoryDto
                 {
                     Version = currentVersion,
-                    FirstUsedDate = currentTemplate?.CreatedAt,
+                    VersionCreatedAt = currentTemplate?.CreatedAt,
+                    ChangeDescription = "Versión inicial",
+                    FirstUsedDate = null,
                     LastUsedDate = null,
                     FormCount = 0,
                     IsCurrentVersion = true
@@ -296,7 +342,7 @@ namespace FormBuilder.API.Controllers
         }
 
         // GET: api/Templates/5/versions/02-01
-        // Obtiene los detalles de una versión específica y sus formularios
+        // Obtiene los detalles de una versión específica
         [HttpGet("{id}/versions/{version}")]
         public async Task<ActionResult<TemplateVersionDetailDto>> GetVersionDetail(int id, string version)
         {
@@ -306,6 +352,12 @@ namespace FormBuilder.API.Controllers
             {
                 return NotFound(new { message = $"Template con ID {id} no encontrado" });
             }
+
+            // ✅ NUEVO: Buscar en TemplateVersions primero
+            var versionSnapshot = await _context.TemplateVersions
+                .Where(tv => tv.TemplateID == id && tv.Version == version)
+                .OrderByDescending(tv => tv.CreatedAt)
+                .FirstOrDefaultAsync();
 
             // Obtener formularios con esta versión
             var formsWithVersion = await _context.FilledForms
@@ -323,6 +375,17 @@ namespace FormBuilder.API.Controllers
             // Si es la versión actual, usar el template actual
             if (version == currentTemplate.Version)
             {
+                Dictionary<string, object>? headerData = null;
+                var firstForm = formsWithVersion.FirstOrDefault();
+                if (firstForm?.HeaderData != null)
+                {
+                    try
+                    {
+                        headerData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(firstForm.HeaderData);
+                    }
+                    catch { }
+                }
+
                 return Ok(new TemplateVersionDetailDto
                 {
                     Version = currentTemplate.Version ?? "1.0",
@@ -334,11 +397,42 @@ namespace FormBuilder.API.Controllers
                     HeaderFields = currentTemplate.HeaderFields,
                     BodyElements = currentTemplate.BodyElements,
                     Firmas = currentTemplate.Firmas,
-                    AssociatedForms = formsWithVersion
+                    AssociatedForms = formsWithVersion,
+                    HeaderFieldsData = headerData
                 });
             }
 
-            // Si es una versión antigua, buscar en el snapshot del primer formulario
+            // ✅ NUEVO: Si existe snapshot en TemplateVersions, usar ese
+            if (versionSnapshot != null)
+            {
+                Dictionary<string, object>? headerData = null;
+                var firstForm = formsWithVersion.FirstOrDefault();
+                if (firstForm?.HeaderData != null)
+                {
+                    try
+                    {
+                        headerData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(firstForm.HeaderData);
+                    }
+                    catch { }
+                }
+
+                return Ok(new TemplateVersionDetailDto
+                {
+                    Version = versionSnapshot.Version,
+                    TemplateID = versionSnapshot.TemplateID,
+                    Codigo = versionSnapshot.Codigo,
+                    Nombre = versionSnapshot.Nombre,
+                    Objetivo = versionSnapshot.Objetivo,
+                    Proceso = versionSnapshot.Proceso,
+                    HeaderFields = versionSnapshot.HeaderFields,
+                    BodyElements = versionSnapshot.BodyElements,
+                    Firmas = versionSnapshot.Firmas,
+                    AssociatedForms = formsWithVersion,
+                    HeaderFieldsData = headerData
+                });
+            }
+
+            // Fallback: buscar en el snapshot del primer formulario (sistema anterior)
             var firstFormWithVersion = await _context.FilledForms
                 .Where(f => f.TemplateID == id && f.TemplateVersion == version && f.TemplateSnapshot != null)
                 .OrderBy(f => f.CreatedAt)
@@ -348,8 +442,17 @@ namespace FormBuilder.API.Controllers
             {
                 try
                 {
-                    // Deserializar el snapshot para obtener la estructura antigua
                     var snapshot = System.Text.Json.JsonSerializer.Deserialize<Template>(firstFormWithVersion.TemplateSnapshot);
+                    
+                    Dictionary<string, object>? headerData = null;
+                    if (firstFormWithVersion.HeaderData != null)
+                    {
+                        try
+                        {
+                            headerData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(firstFormWithVersion.HeaderData);
+                        }
+                        catch { }
+                    }
                     
                     if (snapshot != null)
                     {
@@ -364,7 +467,8 @@ namespace FormBuilder.API.Controllers
                             HeaderFields = snapshot.HeaderFields,
                             BodyElements = snapshot.BodyElements,
                             Firmas = snapshot.Firmas,
-                            AssociatedForms = formsWithVersion
+                            AssociatedForms = formsWithVersion,
+                            HeaderFieldsData = headerData // ⬅️ NUEVO
                         });
                     }
                 }
@@ -392,86 +496,356 @@ namespace FormBuilder.API.Controllers
 
         // GET: api/Templates/5/versions/compare?oldVersion=02-01&newVersion=03-01
         // Compara dos versiones de un template
-        [HttpGet("{id}/versions/compare")]
-        public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
-            int id, 
-            [FromQuery] string oldVersion, 
-            [FromQuery] string newVersion)
+   [HttpGet("{id}/versions/compare")]
+public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
+    int id, 
+    [FromQuery] string oldVersion, 
+    [FromQuery] string newVersion)
+{
+    if (string.IsNullOrEmpty(oldVersion) || string.IsNullOrEmpty(newVersion))
+    {
+        return BadRequest(new { message = "Se requieren oldVersion y newVersion como parámetros" });
+    }
+
+    var currentTemplate = await _context.Templates.FindAsync(id);
+    if (currentTemplate == null)
+    {
+        return NotFound(new { message = $"Template con ID {id} no encontrado" });
+    }
+
+    // ✅ Resolvemos el error CS0103: Definimos oldData y newData
+    var oldData = await GetVersionDetailInternal(id, oldVersion, currentTemplate);
+    var newData = await GetVersionDetailInternal(id, newVersion, currentTemplate);
+
+    if (oldData == null || newData == null)
+    {
+        return NotFound(new { message = "Una o ambas versiones no encontradas" });
+    }
+
+    var comparison = new VersionComparisonDto
+    {
+        OldVersion = oldVersion,
+        NewVersion = newVersion,
+        ComparisonDate = DateTime.Now,
+        Changes = new List<string>(),
+        DetailedChanges = new DetailedChanges()
+    };
+
+    // 1. Comparar Metadatos
+    if (oldData.Nombre != newData.Nombre)
+        comparison.DetailedChanges.MetadataChanges.Add($"Nombre modificado: '{oldData.Nombre}' → '{newData.Nombre}'");
+
+    if (oldData.Objetivo != newData.Objetivo)
+        comparison.DetailedChanges.MetadataChanges.Add($"Objetivo: El texto del objetivo ha cambiado.");
+
+    // 2. Comparar HeaderFields usando tu método existente
+    var headerChanges = CompareHeaderFields(oldData.HeaderFields, newData.HeaderFields);
+    if (headerChanges.Any())
+    {
+        comparison.DetailedChanges.HeaderFieldsChanges.AddRange(headerChanges);
+        comparison.Changes.Add($"Campos de encabezado: {headerChanges.Count} cambio(s)");
+    }
+
+    // 3. Comparar BodyElements usando tu método existente
+    var bodyChanges = CompareBodyElements(oldData.BodyElements, newData.BodyElements);
+    if (bodyChanges.Any())
+    {
+        comparison.DetailedChanges.BodyElementsChanges.AddRange(bodyChanges);
+        comparison.Changes.Add($"Estructura de tablas: {bodyChanges.Count} cambio(s)");
+    }
+
+    // 4. ✅ NUEVO: Comparar Firmas
+    var signatureChanges = CompareSignatures(oldData.Firmas, newData.Firmas);
+    if (signatureChanges.Any())
+    {
+        comparison.DetailedChanges.SignaturesChanges.AddRange(signatureChanges);
+        comparison.Changes.Add($"Firmas: {signatureChanges.Count} cambio(s)");
+    }
+
+    if (!comparison.Changes.Any()) comparison.Changes.Add("No se detectaron cambios");
+
+    return Ok(comparison);
+}
+
+// Helper para comparar las Firmas
+
+
+        // =====================================================
+        // MÉTODO HELPER: Comparar HeaderFields detalladamente
+        // =====================================================
+        private List<FieldChangeDto> CompareHeaderFields(string? oldHeaderFieldsJson, string? newHeaderFieldsJson)
         {
-            if (string.IsNullOrEmpty(oldVersion) || string.IsNullOrEmpty(newVersion))
+            var changes = new List<FieldChangeDto>();
+
+            try
             {
-                return BadRequest(new { message = "Se requieren oldVersion y newVersion como parámetros" });
+                // Parsear ambos JSONs
+                var oldFields = string.IsNullOrEmpty(oldHeaderFieldsJson) 
+                    ? new List<Dictionary<string, object>>() 
+                    : System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, object>>>(oldHeaderFieldsJson) ?? new List<Dictionary<string, object>>();
+
+                var newFields = string.IsNullOrEmpty(newHeaderFieldsJson) 
+                    ? new List<Dictionary<string, object>>() 
+                    : System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, object>>>(newHeaderFieldsJson) ?? new List<Dictionary<string, object>>();
+
+                // ✅ CORREGIDO: Usar 'label' como clave única (no 'name')
+                var oldFieldsDict = new Dictionary<string, Dictionary<string, object>>();
+                foreach (var field in oldFields)
+                {
+                    var label = field.ContainsKey("label") && field["label"] != null ? field["label"].ToString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(label) && !oldFieldsDict.ContainsKey(label))
+                    {
+                        oldFieldsDict[label] = field;
+                    }
+                }
+
+                var newFieldsDict = new Dictionary<string, Dictionary<string, object>>();
+                foreach (var field in newFields)
+                {
+                    var label = field.ContainsKey("label") && field["label"] != null ? field["label"].ToString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(label) && !newFieldsDict.ContainsKey(label))
+                    {
+                        newFieldsDict[label] = field;
+                    }
+                }
+
+                // Detectar campos AGREGADOS
+                foreach (var fieldLabel in newFieldsDict.Keys)
+                {
+                    if (!oldFieldsDict.ContainsKey(fieldLabel))
+                    {
+                        var field = newFieldsDict[fieldLabel];
+                        var type = field.ContainsKey("type") && field["type"] != null ? field["type"].ToString() : "text";
+
+                        changes.Add(new FieldChangeDto
+                        {
+                            ChangeType = "added",
+                            FieldName = fieldLabel,
+                            NewValue = $"{fieldLabel} ({type})",
+                            Description = $"Campo agregado: '{fieldLabel}' (tipo: {type})"
+                        });
+                    }
+                }
+
+                // Detectar campos ELIMINADOS
+                foreach (var fieldLabel in oldFieldsDict.Keys)
+                {
+                    if (!newFieldsDict.ContainsKey(fieldLabel))
+                    {
+                        changes.Add(new FieldChangeDto
+                        {
+                            ChangeType = "removed",
+                            FieldName = fieldLabel,
+                            OldValue = fieldLabel,
+                            Description = $"Campo eliminado: '{fieldLabel}'"
+                        });
+                    }
+                }
+
+                // Detectar campos MODIFICADOS
+                foreach (var fieldLabel in newFieldsDict.Keys)
+                {
+                    if (oldFieldsDict.ContainsKey(fieldLabel))
+                    {
+                        var oldField = oldFieldsDict[fieldLabel];
+                        var newField = newFieldsDict[fieldLabel];
+
+                        var modifications = new List<string>();
+
+                        // Comparar type
+                        var oldType = oldField.ContainsKey("type") && oldField["type"] != null ? oldField["type"].ToString() : "text";
+                        var newType = newField.ContainsKey("type") && newField["type"] != null ? newField["type"].ToString() : "text";
+                        if (oldType != newType)
+                        {
+                            modifications.Add($"tipo: '{oldType}' → '{newType}'");
+                        }
+
+                        // Comparar required
+                        var oldRequired = oldField.ContainsKey("required") && oldField["required"] != null && oldField["required"].ToString()?.ToLower() == "true";
+                        var newRequired = newField.ContainsKey("required") && newField["required"] != null && newField["required"].ToString()?.ToLower() == "true";
+                        if (oldRequired != newRequired)
+                        {
+                            modifications.Add($"requerido: {(oldRequired ? "Sí" : "No")} → {(newRequired ? "Sí" : "No")}");
+                        }
+
+                        if (modifications.Any())
+                        {
+                            changes.Add(new FieldChangeDto
+                            {
+                                ChangeType = "modified",
+                                FieldName = fieldLabel,
+                                Description = $"Campo modificado '{fieldLabel}': {string.Join(", ", modifications)}"
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                changes.Add(new FieldChangeDto
+                {
+                    ChangeType = "error",
+                    FieldName = "HeaderFields",
+                    Description = $"Error al comparar campos de encabezado: {ex.Message}"
+                });
             }
 
-            // Verificar que el template existe
-            var currentTemplate = await _context.Templates.FindAsync(id);
-            if (currentTemplate == null)
+            return changes;
+        }
+
+        // =====================================================
+        // MÉTODO HELPER: Comparar BodyElements detalladamente
+        // =====================================================
+        private List<FieldChangeDto> CompareBodyElements(string? oldBodyElementsJson, string? newBodyElementsJson)
+        {
+            var changes = new List<FieldChangeDto>();
+
+            try
             {
-                return NotFound(new { message = $"Template con ID {id} no encontrado" });
+                // Parsear ambos JSONs
+                using var oldDoc = string.IsNullOrEmpty(oldBodyElementsJson) 
+                    ? System.Text.Json.JsonDocument.Parse("[]")
+                    : System.Text.Json.JsonDocument.Parse(oldBodyElementsJson);
+                
+                using var newDoc = string.IsNullOrEmpty(newBodyElementsJson) 
+                    ? System.Text.Json.JsonDocument.Parse("[]")
+                    : System.Text.Json.JsonDocument.Parse(newBodyElementsJson);
+
+                var oldElements = oldDoc.RootElement;
+                var newElements = newDoc.RootElement;
+
+                // Obtener todas las columnas de ambas versiones
+                var oldColumns = new Dictionary<string, string>(); // label -> type
+                var newColumns = new Dictionary<string, string>(); // label -> type
+
+                // Extraer columnas de versión antigua
+                foreach (var element in oldElements.EnumerateArray())
+                {
+                    if (element.TryGetProperty("columns", out var columns))
+                    {
+                        foreach (var column in columns.EnumerateArray())
+                        {
+                            var label = column.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
+                            var type = column.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "text" : "text";
+                            
+                            if (!string.IsNullOrEmpty(label) && !oldColumns.ContainsKey(label))
+                            {
+                                oldColumns[label] = type;
+                            }
+                        }
+                    }
+                    // También verificar 'fields' en secciones
+                    if (element.TryGetProperty("fields", out var fields))
+                    {
+                        foreach (var field in fields.EnumerateArray())
+                        {
+                            var label = field.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
+                            var type = field.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "text" : "text";
+                            
+                            if (!string.IsNullOrEmpty(label) && !oldColumns.ContainsKey(label))
+                            {
+                                oldColumns[label] = type;
+                            }
+                        }
+                    }
+                }
+
+                // Extraer columnas de versión nueva
+                foreach (var element in newElements.EnumerateArray())
+                {
+                    if (element.TryGetProperty("columns", out var columns))
+                    {
+                        foreach (var column in columns.EnumerateArray())
+                        {
+                            var label = column.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
+                            var type = column.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "text" : "text";
+                            
+                            if (!string.IsNullOrEmpty(label) && !newColumns.ContainsKey(label))
+                            {
+                                newColumns[label] = type;
+                            }
+                        }
+                    }
+                    // También verificar 'fields' en secciones
+                    if (element.TryGetProperty("fields", out var fields))
+                    {
+                        foreach (var field in fields.EnumerateArray())
+                        {
+                            var label = field.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
+                            var type = field.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "text" : "text";
+                            
+                            if (!string.IsNullOrEmpty(label) && !newColumns.ContainsKey(label))
+                            {
+                                newColumns[label] = type;
+                            }
+                        }
+                    }
+                }
+
+                // Detectar columnas AGREGADAS
+                foreach (var columnLabel in newColumns.Keys)
+                {
+                    if (!oldColumns.ContainsKey(columnLabel))
+                    {
+                        var type = newColumns[columnLabel];
+                        changes.Add(new FieldChangeDto
+                        {
+                            ChangeType = "added",
+                            FieldName = columnLabel,
+                            NewValue = $"{columnLabel} ({type})",
+                            Description = $"Columna agregada: '{columnLabel}' (tipo: {type})"
+                        });
+                    }
+                }
+
+                // Detectar columnas ELIMINADAS
+                foreach (var columnLabel in oldColumns.Keys)
+                {
+                    if (!newColumns.ContainsKey(columnLabel))
+                    {
+                        changes.Add(new FieldChangeDto
+                        {
+                            ChangeType = "removed",
+                            FieldName = columnLabel,
+                            OldValue = columnLabel,
+                            Description = $"Columna eliminada: '{columnLabel}'"
+                        });
+                    }
+                }
+
+                // Detectar columnas MODIFICADAS
+                foreach (var columnLabel in newColumns.Keys)
+                {
+                    if (oldColumns.ContainsKey(columnLabel))
+                    {
+                        var oldType = oldColumns[columnLabel];
+                        var newType = newColumns[columnLabel];
+                        
+                        if (oldType != newType)
+                        {
+                            changes.Add(new FieldChangeDto
+                            {
+                                ChangeType = "modified",
+                                FieldName = columnLabel,
+                                OldValue = oldType,
+                                NewValue = newType,
+                                Description = $"Columna modificada '{columnLabel}': tipo '{oldType}' → '{newType}'"
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                changes.Add(new FieldChangeDto
+                {
+                    ChangeType = "error",
+                    FieldName = "BodyElements",
+                    Description = $"Error al comparar elementos del cuerpo: {ex.Message}"
+                });
             }
 
-            // Obtener detalles de la versión antigua
-            TemplateVersionDetailDto? oldData = null;
-            if (oldVersion == currentTemplate.Version)
-            {
-                // Versión actual
-                oldData = await GetVersionDetailInternal(id, oldVersion, currentTemplate);
-            }
-            else
-            {
-                // Versión histórica
-                oldData = await GetVersionDetailInternal(id, oldVersion, currentTemplate);
-            }
-
-            // Obtener detalles de la versión nueva
-            TemplateVersionDetailDto? newData = null;
-            if (newVersion == currentTemplate.Version)
-            {
-                // Versión actual
-                newData = await GetVersionDetailInternal(id, newVersion, currentTemplate);
-            }
-            else
-            {
-                // Versión histórica
-                newData = await GetVersionDetailInternal(id, newVersion, currentTemplate);
-            }
-
-            if (oldData == null || newData == null)
-            {
-                return NotFound(new { message = "Una o ambas versiones no encontradas" });
-            }
-
-            var comparison = new VersionComparisonDto
-            {
-                OldVersion = oldVersion,
-                NewVersion = newVersion,
-                ComparisonDate = DateTime.UtcNow,
-                Changes = new List<string>()
-            };
-
-            // Comparar campos
-            if (oldData.Nombre != newData.Nombre)
-                comparison.Changes.Add($"Nombre: '{oldData.Nombre}' → '{newData.Nombre}'");
-
-            if (oldData.Objetivo != newData.Objetivo)
-                comparison.Changes.Add($"Objetivo: '{oldData.Objetivo}' → '{newData.Objetivo}'");
-
-            if (oldData.Proceso != newData.Proceso)
-                comparison.Changes.Add($"Proceso: '{oldData.Proceso}' → '{newData.Proceso}'");
-
-            if (oldData.HeaderFields != newData.HeaderFields)
-                comparison.Changes.Add("HeaderFields: Estructura modificada");
-
-            if (oldData.BodyElements != newData.BodyElements)
-                comparison.Changes.Add("BodyElements: Estructura de tabla modificada");
-
-            if (oldData.Firmas != newData.Firmas)
-                comparison.Changes.Add("Firmas: Estructura de firmas modificada");
-
-            if (!comparison.Changes.Any())
-                comparison.Changes.Add("No se detectaron cambios entre versiones");
-
-            return Ok(comparison);
+            return changes;
         }
 
         // Método helper interno para obtener detalles de versión sin ActionResult
@@ -577,5 +951,29 @@ namespace FormBuilder.API.Controllers
 
             return Ok(forms);
         }
+        // Método para comparar firmas detalladamente
+private List<FieldChangeDto> CompareSignatures(string? json1, string? json2)
+{
+    var changes = new List<FieldChangeDto>();
+    try 
+    {
+        // ✅ Resolvemos error JsonSerializer
+        var list1 = string.IsNullOrEmpty(json1) ? new List<FirmaItem>() : JsonSerializer.Deserialize<List<FirmaItem>>(json1, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        var list2 = string.IsNullOrEmpty(json2) ? new List<FirmaItem>() : JsonSerializer.Deserialize<List<FirmaItem>>(json2, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        foreach (var item in list2 ?? new()) {
+            if (!list1?.Any(x => x.puesto == item.puesto) ?? true)
+                changes.Add(new FieldChangeDto { ChangeType = "added", FieldName = item.puesto, Description = $"✅ Firma agregada para: {item.puesto}" });
+        }
+        foreach (var item in list1 ?? new()) {
+            if (!list2?.Any(x => x.puesto == item.puesto) ?? true)
+                changes.Add(new FieldChangeDto { ChangeType = "removed", FieldName = item.puesto, Description = $"❌ Firma eliminada: {item.puesto}" });
+        }
+    } catch { }
+    return changes;
+}
+
+// Clase interna para procesar el JSON de firmas
+public class FirmaItem { public string puesto { get; set; } = ""; }
     }
 }

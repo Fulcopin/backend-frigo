@@ -13,7 +13,9 @@ builder.Services.AddCors(options =>
                       policy =>
                       {
                           // Aquí pones la dirección de tu aplicación de React
-                          policy.WithOrigins("http://localhost:5173",
+                          policy.WithOrigins(
+                            "http://localhost:5173",
+                            "http://localhost:5174",  // ✅ Agregado para tu frontend actual
                             "https://frigo-fron.onrender.com") 
                                 .AllowAnyHeader()
                                 .AllowAnyMethod();

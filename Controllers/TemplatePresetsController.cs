@@ -32,7 +32,17 @@ namespace FormBuilder.API.Controllers
                 new { id = "col-peso3", header = "⚖️ PESO 3", type = "number", width = 100, unit = "kg" },
                 new { id = "col-peso4", header = "⚖️ PESO 4", type = "number", width = 100, unit = "kg" },
                 new { id = "col-peso5", header = "⚖️ PESO 5", type = "number", width = 100, unit = "kg" },
-                new { id = "col-total", header = "📊 TOTAL", type = "calculated", width = 120, unit = "kg", formula = "sum(PESO1,PESO2,PESO3,PESO4,PESO5)", @readonly = true, bold = true }
+                new 
+{ 
+    id = "col-total", 
+    header = "📊 TOTAL", 
+    type = "calculated", // Clave: tipo calculado
+    width = 120, 
+    unit = "kg",
+    formula = "sum(PESO1,PESO2,PESO3,PESO4,PESO5)", // Clave: fórmula específica
+    @readonly = true, 
+    bold = true 
+}
             };
 
             var tableRows = new List<object>();

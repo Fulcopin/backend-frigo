@@ -18,13 +18,137 @@ namespace FormBuilder.API.Controllers
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<FilledForm>>> GetFilledForms()
+        public async Task<ActionResult<IEnumerable<object>>> GetFilledForms()
         {
-            return await _context.FilledForms
+            var forms = await _context.FilledForms
+                                 .Include(f => f.Template)
                                  .OrderByDescending(f => f.CreatedAt)
                                  .ToListAsync();
+            
+            // Mapear a objeto anónimo con el nombre del template
+            var result = forms.Select(f => new
+            {
+                f.FormID,
+                f.TemplateID,
+                TemplateName = f.Template?.Nombre ?? "Sin nombre",
+                f.TemplateVersion,
+                f.FechaVersion,
+                f.HeaderData,
+                f.BodyData,
+                f.FirmasData,
+                f.Observaciones,
+                f.CreatedAt,
+                f.UpdatedAt
+            });
+            
+            return Ok(result);
         }
 
+        // 🆕 NUEVO ENDPOINT: Obtener datos simples y parseados para importación
+        [HttpGet("{id}/simple")]
+        public async Task<ActionResult<object>> GetFilledFormSimple(int id)
+        {
+            Console.WriteLine($"📥 GetFilledFormSimple: Buscando formulario ID={id}");
+            
+            var filledForm = await _context.FilledForms
+                .Include(f => f.Template)
+                .FirstOrDefaultAsync(f => f.FormID == id);
+
+            if (filledForm == null)
+            {
+                Console.WriteLine($"❌ Formulario ID={id} no encontrado");
+                return NotFound(new { message = $"Formulario {id} no encontrado" });
+            }
+
+            Console.WriteLine($"✅ Formulario encontrado: ID={id}, TemplateID={filledForm.TemplateID}");
+
+            // Parsear HeaderData y BodyData directamente
+            object? headerDataParsed = null;
+            object? bodyDataParsed = null;
+
+            try {
+                if (!string.IsNullOrEmpty(filledForm.HeaderData)) {
+                    headerDataParsed = JsonSerializer.Deserialize<object>(filledForm.HeaderData);
+                }
+            } catch {
+                headerDataParsed = new { raw = filledForm.HeaderData };
+            }
+
+            try {
+                if (!string.IsNullOrEmpty(filledForm.BodyData)) {
+                    bodyDataParsed = JsonSerializer.Deserialize<object>(filledForm.BodyData);
+                }
+            } catch {
+                bodyDataParsed = new { raw = filledForm.BodyData };
+            }
+
+            // Devolver datos simples y directos
+            var response = new {
+                formID = filledForm.FormID,
+                templateID = filledForm.TemplateID,
+                templateName = filledForm.Template?.Nombre ?? "Sin nombre",
+                templateVersion = filledForm.TemplateVersion,
+                headerData = headerDataParsed,
+                bodyData = bodyDataParsed,
+                createdAt = filledForm.CreatedAt,
+                updatedAt = filledForm.UpdatedAt
+            };
+
+            Console.WriteLine($"📤 Retornando datos simples para FormID={id}");
+            return Ok(response);
+        }
+[HttpGet("erp-report")]
+public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
+    [FromQuery] DateTime? inicio, 
+    [FromQuery] DateTime? fin,
+    [FromQuery] int? templateId)
+{
+    try 
+    {
+        // 1. Iniciar consulta
+        var query = _context.FilledForms
+            .Include(f => f.Template)
+            .AsNoTracking()
+            .AsQueryable();
+
+        // 2. Filtros
+        if (inicio.HasValue) query = query.Where(f => f.CreatedAt >= inicio.Value);
+        if (fin.HasValue) 
+        {
+            var fechaFin = fin.Value.Date.AddHours(23).AddMinutes(59).AddSeconds(59);
+            query = query.Where(f => f.CreatedAt <= fechaFin);
+        }
+        if (templateId.HasValue && templateId.Value > 0)
+        {
+            query = query.Where(f => f.TemplateID == templateId.Value);
+        }
+
+        // 3. Ejecutar
+        var forms = await query
+            .OrderByDescending(f => f.CreatedAt)
+            .ToListAsync();
+
+        // 4. Mapeo COMPLETO (Incluyendo Firmas y Observaciones)
+        var result = forms.Select(f => new
+        {
+            formID = f.FormID,
+            templateID = f.TemplateID,
+            templateName = f.Template?.Nombre ?? "Sin nombre",
+            createdAt = f.CreatedAt,
+            headerData = f.HeaderData, 
+            bodyData = f.BodyData,
+            // 👇 ESTOS SON LOS CAMPOS QUE FALTABAN 👇
+            firmasData = f.FirmasData,      
+            observaciones = f.Observaciones 
+        });
+
+        return Ok(result);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, $"Error interno: {ex.Message}");
+    }
+}
         [HttpGet("{id}")]
         public async Task<ActionResult<object>> GetFilledForm(int id)
         {
@@ -37,34 +161,65 @@ namespace FormBuilder.API.Controllers
                 return NotFound();
             }
 
-            // VERSIONAMIENTO: Usar el snapshot guardado si existe, si no, usar el template actual
+            Console.WriteLine($"📋 GetFilledForm ID={id}, CreatedAt={filledForm.CreatedAt:yyyy-MM-dd}, TemplateID={filledForm.TemplateID}");
+
+            // 🎯 LÓGICA DE VERSIONAMIENTO POR FECHA
             object? templateData = null;
-            
-            if (!string.IsNullOrEmpty(filledForm.TemplateSnapshot))
+            string versionUsada = filledForm.TemplateVersion ?? "1";
+            bool versionCorrecta = false;
+
+            // 1️⃣ Determinar qué versión DEBERÍA usar según la fecha de creación
+            if (filledForm.CreatedAt != default(DateTime))
             {
-                // Usar el snapshot histórico (formato con el que se creó el formulario)
-                try
+                string versionVigente = await GetVersionVigenteEnFecha(filledForm.TemplateID, filledForm.CreatedAt);
+                Console.WriteLine($"🔍 Versión vigente en {filledForm.CreatedAt:yyyy-MM-dd}: {versionVigente}");
+
+                // 2️⃣ Si la versión guardada NO coincide con la vigente, buscar la estructura correcta
+                if (filledForm.TemplateVersion != versionVigente)
                 {
-                    templateData = JsonSerializer.Deserialize<object>(filledForm.TemplateSnapshot);
+                    Console.WriteLine($"⚠️ Versión guardada ({filledForm.TemplateVersion}) != Versión vigente ({versionVigente})");
+                    templateData = await GetTemplateStructureByVersion(filledForm.TemplateID, versionVigente);
+                    versionUsada = versionVigente;
+                    versionCorrecta = false; // Indica que se corrigió la versión
                 }
-                catch
+                else
                 {
-                    // Si falla la deserialización, usar el template actual como fallback
-                    templateData = GetCurrentTemplateData(filledForm.Template);
+                    Console.WriteLine($"✅ Versión guardada coincide con la vigente");
+                    versionCorrecta = true;
                 }
-            }
-            else
-            {
-                // Fallback al template actual (para datos antiguos sin snapshot)
-                templateData = GetCurrentTemplateData(filledForm.Template);
             }
 
-            // Crear una respuesta que incluya tanto el formulario como el template
+            // 3️⃣ Si no se pudo determinar por fecha, usar snapshot o template actual
+            if (templateData == null)
+            {
+                if (!string.IsNullOrEmpty(filledForm.TemplateSnapshot))
+                {
+                    try
+                    {
+                        templateData = JsonSerializer.Deserialize<object>(filledForm.TemplateSnapshot);
+                        Console.WriteLine($"📸 Usando TemplateSnapshot");
+                    }
+                    catch
+                    {
+                        templateData = GetCurrentTemplateData(filledForm.Template);
+                        Console.WriteLine($"⚠️ Fallback a template actual (error deserialización)");
+                    }
+                }
+                else
+                {
+                    templateData = GetCurrentTemplateData(filledForm.Template);
+                    Console.WriteLine($"⚠️ Fallback a template actual (sin snapshot)");
+                }
+            }
+
+            // 4️⃣ Crear respuesta con metadata de versión
             var response = new
             {
                 FormID = filledForm.FormID,
                 TemplateID = filledForm.TemplateID,
-                TemplateVersion = filledForm.TemplateVersion, // Versión del template usada
+                TemplateVersion = filledForm.TemplateVersion, // Versión GUARDADA
+                VersionUsada = versionUsada, // Versión REALMENTE usada
+                VersionCorrecta = versionCorrecta, // TRUE si la guardada coincide con la vigente
                 HeaderData = filledForm.HeaderData,
                 BodyData = filledForm.BodyData,
                 FirmasData = filledForm.FirmasData,
@@ -72,7 +227,7 @@ namespace FormBuilder.API.Controllers
                 CreatedAt = filledForm.CreatedAt,
                 UpdatedAt = filledForm.UpdatedAt,
                 Template = templateData,
-                IsHistorical = !string.IsNullOrEmpty(filledForm.TemplateSnapshot) // Indica si usa versión histórica
+                IsHistorical = !string.IsNullOrEmpty(filledForm.TemplateSnapshot)
             };
 
             return Ok(response);
@@ -646,6 +801,70 @@ namespace FormBuilder.API.Controllers
             var formIds = forms.Select(f => f.FormID).ToArray();
             
             return await ExportMultipleForms(formIds);
+        }
+
+        // 🎯 MÉTODO HELPER: Determina qué versión estaba vigente en una fecha específica
+        private async Task<string> GetVersionVigenteEnFecha(int templateId, DateTime fecha)
+        {
+            // Obtener todas las versiones con fecha asignada
+            var versiones = await _context.TemplateVersions
+                .Where(tv => tv.TemplateID == templateId && tv.FechaVersion != null)
+                .OrderByDescending(tv => tv.FechaVersion)
+                .ToListAsync();
+
+            Console.WriteLine($"🔍 DEBUG - GetVersionVigenteEnFecha: TemplateID={templateId}, Fecha={fecha:yyyy-MM-dd}");
+            Console.WriteLine($"🔍 DEBUG - Versiones encontradas: {versiones.Count}");
+
+            // Buscar la versión más reciente que sea <= a la fecha del formulario
+            var versionVigente = versiones
+                .Where(v => v.FechaVersion <= fecha)
+                .OrderByDescending(v => v.FechaVersion)
+                .FirstOrDefault();
+
+            if (versionVigente != null)
+            {
+                Console.WriteLine($"✅ Versión vigente encontrada: {versionVigente.Version} (FechaVersion: {versionVigente.FechaVersion:yyyy-MM-dd})");
+                return versionVigente.Version;
+            }
+
+            // Si no hay versión vigente, usar la versión actual del template
+            var currentTemplate = await _context.Templates.FindAsync(templateId);
+            var fallbackVersion = currentTemplate?.Version ?? "1";
+            Console.WriteLine($"⚠️ No se encontró versión vigente, usando fallback: {fallbackVersion}");
+            return fallbackVersion;
+        }
+
+        // 🎯 MÉTODO HELPER: Obtiene la estructura de una versión específica
+        private async Task<object?> GetTemplateStructureByVersion(int templateId, string version)
+        {
+            Console.WriteLine($"🔍 DEBUG - GetTemplateStructureByVersion: TemplateID={templateId}, Version={version}");
+
+            // Buscar la versión específica
+            var templateVersion = await _context.TemplateVersions
+                .FirstOrDefaultAsync(tv => tv.TemplateID == templateId && tv.Version == version);
+
+            if (templateVersion == null)
+            {
+                Console.WriteLine($"⚠️ No se encontró TemplateVersion para version={version}");
+                return null;
+            }
+
+            // Construir objeto con la estructura
+            var structure = new
+            {
+                headerFields = string.IsNullOrEmpty(templateVersion.HeaderFields) 
+                    ? new List<object>() 
+                    : JsonSerializer.Deserialize<List<object>>(templateVersion.HeaderFields),
+                bodyElements = string.IsNullOrEmpty(templateVersion.BodyElements) 
+                    ? new List<object>() 
+                    : JsonSerializer.Deserialize<List<object>>(templateVersion.BodyElements),
+                firmas = string.IsNullOrEmpty(templateVersion.Firmas) 
+                    ? new List<object>() 
+                    : JsonSerializer.Deserialize<List<object>>(templateVersion.Firmas)
+            };
+
+            Console.WriteLine($"✅ Estructura recuperada para version={version}");
+            return structure;
         }
     }
 

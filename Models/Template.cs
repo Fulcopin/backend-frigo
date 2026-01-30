@@ -21,6 +21,9 @@ namespace FormBuilder.API.Models
         [StringLength(20)]
         public string Version { get; set; } = "1";
 
+        // Fecha en que entra en vigor esta versión
+        public DateTime? FechaVersion { get; set; }
+
         public string? Objetivo { get; set; }
         public string? Proceso { get; set; }
         public string? CuandoSeUsa { get; set; }
