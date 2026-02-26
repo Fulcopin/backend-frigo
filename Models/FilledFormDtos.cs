@@ -12,6 +12,15 @@ namespace FormBuilder.API.Models
         public string BodyData { get; set; } = string.Empty;
 
         public string FirmasData { get; set; } = string.Empty;
+        
+        // 🦐🐟 NUEVO: Tipo de producto (Camarón o Pescado)
+        public string? TipoProducto { get; set; }
+        
+        // ✅ AUDITORÍA: Información del usuario que llenó el formulario
+        public string? FilledBy { get; set; }
+        public string? FilledByEmail { get; set; }
+        public string? FilledByRole { get; set; }
+        
         public string? Observaciones { get; set; }
     }
 }

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
+using FormBuilder.API.Services; // ✅ Para IEmailService
 using System.Text.Json;
 
 namespace FormBuilder.API.Controllers
@@ -11,10 +12,17 @@ namespace FormBuilder.API.Controllers
     public class FilledFormsController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly ILogger<FilledFormsController> _logger; // ✅ Para logging
+        private readonly IEmailService _emailService; // ✅ Para enviar emails
 
-        public FilledFormsController(ApplicationDbContext context)
+        public FilledFormsController(
+            ApplicationDbContext context,
+            ILogger<FilledFormsController> logger,
+            IEmailService emailService)
         {
             _context = context;
+            _logger = logger;
+            _emailService = emailService;
         }
 
         [HttpGet]
@@ -25,7 +33,7 @@ namespace FormBuilder.API.Controllers
                                  .OrderByDescending(f => f.CreatedAt)
                                  .ToListAsync();
             
-            // Mapear a objeto anónimo con el nombre del template
+            // Mapear a objeto anónimo con el nombre del template y datos de auditoría
             var result = forms.Select(f => new
             {
                 f.FormID,
@@ -33,6 +41,15 @@ namespace FormBuilder.API.Controllers
                 TemplateName = f.Template?.Nombre ?? "Sin nombre",
                 f.TemplateVersion,
                 f.FechaVersion,
+                
+                // ✅ AUDITORÍA
+                f.FilledBy,
+                f.FilledByEmail,
+                f.FilledByRole,
+                
+                // 🦐🐟 TIPO DE PRODUCTO
+                f.TipoProducto,
+                
                 f.HeaderData,
                 f.BodyData,
                 f.FirmasData,
@@ -220,6 +237,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 TemplateVersion = filledForm.TemplateVersion, // Versión GUARDADA
                 VersionUsada = versionUsada, // Versión REALMENTE usada
                 VersionCorrecta = versionCorrecta, // TRUE si la guardada coincide con la vigente
+                
+                // 🦐🐟 TIPO DE PRODUCTO
+                TipoProducto = filledForm.TipoProducto,
+                
                 HeaderData = filledForm.HeaderData,
                 BodyData = filledForm.BodyData,
                 FirmasData = filledForm.FirmasData,
@@ -273,6 +294,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 FormID = filledForm.FormID,
                 TemplateID = filledForm.TemplateID,
                 TemplateVersion = filledForm.TemplateVersion, // Versión guardada
+                
+                // 🦐🐟 TIPO DE PRODUCTO
+                TipoProducto = filledForm.TipoProducto,
+                
                 HeaderData = !string.IsNullOrEmpty(filledForm.HeaderData) ? filledForm.HeaderData : "{}",
                 BodyData = !string.IsNullOrEmpty(filledForm.BodyData) ? filledForm.BodyData : "{}",
                 FirmasData = !string.IsNullOrEmpty(filledForm.FirmasData) ? filledForm.FirmasData : "{}",
@@ -303,7 +328,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 Codigo = template.Codigo,
                 Nombre = template.Nombre,
                 Version = template.Version,
-                Objetivo = template.Objetivo,
+                Objetivo = template.Supervisa,
                 Proceso = template.Proceso,
                 CuandoSeUsa = template.CuandoSeUsa,
                 QuienLoLlena = template.QuienLoLlena,
@@ -320,15 +345,29 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 TemplateID = dto.TemplateID,
                 TemplateVersion = template.Version, // Guardar la versión específica usada
                 TemplateSnapshot = JsonSerializer.Serialize(templateSnapshot), // Guardar snapshot completo
+                FechaVersion = DateTime.UtcNow, // ✅ Fecha de versión
+                
+                // ✅ AUDITORÍA: Guardar quién creó el formulario
+                FilledBy = dto.FilledBy,
+                FilledByEmail = dto.FilledByEmail,
+                FilledByRole = dto.FilledByRole,
+                
                 HeaderData = dto.HeaderData,
                 BodyData = dto.BodyData,
                 FirmasData = dto.FirmasData,
+                TipoProducto = dto.TipoProducto, // 🦐🐟 NUEVO: Guardar tipo de producto
                 Observaciones = dto.Observaciones,
                 CreatedAt = DateTime.UtcNow
             };
 
             _context.FilledForms.Add(filledForm);
             await _context.SaveChangesAsync();
+            
+            _logger.LogInformation("✅ Formulario {FormId} creado por {User} ({Email})", 
+                filledForm.FormID, filledForm.FilledBy ?? "Desconocido", filledForm.FilledByEmail ?? "Sin email");
+
+            // ✅ CREAR ALERTAS INMEDIATAS para todos los firmantes
+            await CreateInitialSignatureAlerts(filledForm, template);
             
             return CreatedAtAction(nameof(GetFilledForm), new { id = filledForm.FormID }, filledForm);
         }
@@ -355,6 +394,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             existingForm.HeaderData = dto.HeaderData;
             existingForm.BodyData = dto.BodyData;
             existingForm.FirmasData = dto.FirmasData;
+            existingForm.TipoProducto = dto.TipoProducto; // 🦐🐟 NUEVO: Actualizar tipo de producto
             existingForm.Observaciones = dto.Observaciones;
             existingForm.UpdatedAt = DateTime.UtcNow; // Agregar timestamp de actualización
             // CreatedAt se mantiene sin cambios
@@ -403,6 +443,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 
             if (!string.IsNullOrEmpty(dto.FirmasData))
                 existingForm.FirmasData = dto.FirmasData;
+            
+            // 🦐🐟 NUEVO: Actualizar tipo de producto en autoguardado
+            if (!string.IsNullOrEmpty(dto.TipoProducto))
+                existingForm.TipoProducto = dto.TipoProducto;
                 
             if (!string.IsNullOrEmpty(dto.Observaciones))
                 existingForm.Observaciones = dto.Observaciones;
@@ -457,7 +501,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 Codigo = template.Codigo,
                 Nombre = template.Nombre,
                 Version = template.Version,
-                Objetivo = template.Objetivo,
+                Objetivo = template.Supervisa,
                 Proceso = template.Proceso,
                 CuandoSeUsa = template.CuandoSeUsa,
                 QuienLoLlena = template.QuienLoLlena,
@@ -575,6 +619,9 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 Observaciones = filledForm.Observaciones,
                 IsHistorical = isHistorical,
                 
+                // 🦐🐟 TIPO DE PRODUCTO
+                TipoProducto = filledForm.TipoProducto,
+                
                 // Datos del formulario (parseados)
                 Data = new
                 {
@@ -590,7 +637,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                     Codigo = templateToUse.Codigo,
                     Nombre = templateToUse.Nombre,
                     Version = templateToUse.Version,
-                    Objetivo = templateToUse.Objetivo,
+                    Objetivo = templateToUse.Supervisa,
                     Proceso = templateToUse.Proceso,
                     CuandoSeUsa = templateToUse.CuandoSeUsa,
                     QuienLoLlena = templateToUse.QuienLoLlena,
@@ -719,7 +766,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         Codigo = templateToUse.Codigo,
                         Nombre = templateToUse.Nombre,
                         Version = templateToUse.Version,
-                        Objetivo = templateToUse.Objetivo,
+                        Objetivo = templateToUse.Supervisa,
                         Proceso = templateToUse.Proceso,
                         Structure = new
                         {
@@ -866,6 +913,241 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             Console.WriteLine($"✅ Estructura recuperada para version={version}");
             return structure;
         }
+
+        /// <summary>
+        /// ✨ NUEVO: Crea alertas para TODOS los firmantes cuando se crea el formulario
+        /// </summary>
+        private async Task CreateInitialSignatureAlerts(FilledForm form, Template template)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(form.FirmasData))
+                {
+                    _logger.LogInformation("⚠️ Formulario {FormId} no tiene FirmasData, no se crean alertas", form.FormID);
+                    return;
+                }
+
+                var firmasDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.FirmasData);
+                if (firmasDict == null || firmasDict.Count == 0)
+                {
+                    _logger.LogInformation("⚠️ Formulario {FormId} - FirmasData vacío", form.FormID);
+                    return;
+                }
+
+                var templateName = template.Nombre ?? "Formulario";
+                var formCode = template.Codigo ?? "N/A";
+
+                _logger.LogInformation("📋 Creando alertas iniciales para formulario {FormId} ({FormCode}). Total puestos: {Count}", 
+                    form.FormID, formCode, firmasDict.Count);
+
+                int alertasCreadas = 0;
+
+                foreach (var kvp in firmasDict)
+                {
+                    string puesto = kvp.Key;
+                    var firmaData = kvp.Value;
+
+                    if (firmaData.ValueKind != JsonValueKind.Object)
+                    {
+                        _logger.LogWarning("  ⚠️ Puesto {Puesto} no es un objeto JSON válido", puesto);
+                        continue;
+                    }
+
+                    // Extraer email del usuario asignado
+                    string? targetEmail = null;
+                    string? targetName = null;
+                    
+                    if (firmaData.TryGetProperty("email", out var emailProp))
+                    {
+                        targetEmail = emailProp.GetString();
+                    }
+
+                    if (firmaData.TryGetProperty("nombre", out var nombreProp))
+                    {
+                        targetName = nombreProp.GetString();
+                    }
+
+                    // Fallback: buscar en nombre si contiene @
+                    if (string.IsNullOrEmpty(targetEmail) && !string.IsNullOrEmpty(targetName) && targetName.Contains("@"))
+                    {
+                        targetEmail = targetName;
+                    }
+
+                    // Si no hay email asignado, saltar este puesto
+                    if (string.IsNullOrEmpty(targetEmail))
+                    {
+                        _logger.LogWarning("  ⚠️ Puesto {Puesto}: No se encontró email asignado, saltando", puesto);
+                        continue;
+                    }
+
+                    _logger.LogInformation("  🔍 Puesto {Puesto}: Usuario asignado = {Name} ({Email})", 
+                        puesto, targetName ?? "Sin nombre", targetEmail);
+
+                    // Verificar si ya firmó (en caso de formularios pre-firmados)
+                    bool yaFirmo = false;
+                    if (firmaData.TryGetProperty("firma", out var firmaObj) && firmaObj.ValueKind == JsonValueKind.Object)
+                    {
+                        bool tieneUrl = firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString());
+                        bool tieneBase64 = firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString());
+                        yaFirmo = tieneUrl || tieneBase64;
+
+                        if (yaFirmo)
+                        {
+                            _logger.LogInformation("  ✅ Puesto {Puesto} ({Email}): Ya tiene firma, no se crea alerta", puesto, targetEmail);
+                            continue;
+                        }
+                    }
+
+                    // Verificar si ya existe alerta (evitar duplicados)
+                    var existingAlert = await _context.Set<Alert>()
+                        .FirstOrDefaultAsync(a =>
+                            a.FormId == form.FormID &&
+                            a.TargetEmail == targetEmail &&
+                            a.Type == "signature" &&
+                            a.Status == "pending");
+
+                    if (existingAlert != null)
+                    {
+                        _logger.LogInformation("  ℹ️ Ya existe alerta para {Email} en formulario {FormId}", targetEmail, form.FormID);
+                        continue;
+                    }
+
+                    // ✅ CREAR ALERTA
+                    var alert = new Alert
+                    {
+                        Type = "signature",
+                        Priority = "high",
+                        Title = $"Firma requerida: {templateName}",
+                        Message = $"Se ha creado el formulario {formCode} ({templateName}) que requiere tu firma en el puesto: {puesto}. Por favor revisa y firma el formulario lo antes posible.",
+                        TargetEmail = targetEmail,
+                        FormId = form.FormID,
+                        FormCode = formCode,
+                        CreatedDate = DateTime.UtcNow,
+                        IsRead = false,
+                        Status = "pending"
+                    };
+
+                    _context.Set<Alert>().Add(alert);
+                    alertasCreadas++;
+                    
+                    _logger.LogInformation("  ✅ ALERTA CREADA para {Email} en puesto {Puesto}", targetEmail, puesto);
+
+                    // 📧 ENVIAR EMAIL (en background para no bloquear)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var emailSubject = $"✍️ Firma Requerida - {templateName}";
+                            var emailBody = $@"
+                                <html>
+                                <head>
+                                    <style>
+                                        body {{ margin: 0; padding: 0; font-family: Arial, sans-serif; }}
+                                        .container {{ max-width: 600px; margin: 0 auto; }}
+                                    </style>
+                                </head>
+                                <body>
+                                    <div class='container'>
+                                        <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                                                    padding: 30px; 
+                                                    border-radius: 10px; 
+                                                    color: white; 
+                                                    margin-bottom: 20px;'>
+                                            <h1 style='margin: 0;'>✍️ Nuevo Formulario Requiere tu Firma</h1>
+                                            <p style='margin: 10px 0 0 0; font-size: 18px;'>Sistema de Gestión Frigolab</p>
+                                        </div>
+                                        
+                                        <div style='background: #f8f9fa; 
+                                                    padding: 20px; 
+                                                    border-radius: 10px; 
+                                                    margin-bottom: 20px;'>
+                                            <h2 style='color: #333; margin-top: 0;'>Hola {targetName ?? "Usuario"},</h2>
+                                            <p style='color: #555; font-size: 16px; line-height: 1.6;'>
+                                                Se ha creado un nuevo formulario que requiere tu firma digital:
+                                            </p>
+                                            
+                                            <table style='width: 100%; 
+                                                        margin: 20px 0; 
+                                                        background: white; 
+                                                        border-radius: 8px; 
+                                                        overflow: hidden;
+                                                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);'>
+                                                <tr style='background: #667eea; color: white;'>
+                                                    <td style='padding: 12px; font-weight: bold; width: 40%;'>Formulario</td>
+                                                    <td style='padding: 12px;'>{templateName}</td>
+                                                </tr>
+                                                <tr>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd; font-weight: bold;'>Código</td>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd;'>{formCode}</td>
+                                                </tr>
+                                                <tr style='background: #f8f9fa;'>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd; font-weight: bold;'>Tu puesto</td>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd;'>{puesto}</td>
+                                                </tr>
+                                                <tr>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd; font-weight: bold;'>Creado por</td>
+                                                    <td style='padding: 12px; border-bottom: 1px solid #ddd;'>{form.FilledBy ?? "Sistema"}</td>
+                                                </tr>
+                                                <tr style='background: #f8f9fa;'>
+                                                    <td style='padding: 12px; font-weight: bold;'>Fecha de creación</td>
+                                                    <td style='padding: 12px;'>{DateTime.Now:dd/MM/yyyy HH:mm}</td>
+                                                </tr>
+                                            </table>
+                                            
+                                            <div style='margin: 30px 0; text-align: center;'>
+                                                <a href='http://localhost:5173/signatures' 
+                                                   style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                                                          color: white; 
+                                                          padding: 15px 40px; 
+                                                          text-decoration: none; 
+                                                          border-radius: 8px; 
+                                                          font-size: 16px; 
+                                                          font-weight: bold;
+                                                          display: inline-block;
+                                                          box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);'>
+                                                    ✍️ Ir a Firmar Ahora
+                                                </a>
+                                            </div>
+                                            
+                                            <p style='color: #777; font-size: 14px; margin-top: 20px;'>
+                                                <strong>Nota:</strong> Por favor firma este formulario lo antes posible.
+                                            </p>
+                                        </div>
+                                        
+                                        <div style='color: #999; 
+                                                    font-size: 12px; 
+                                                    text-align: center; 
+                                                    margin-top: 30px; 
+                                                    padding: 20px;
+                                                    border-top: 1px solid #ddd;'>
+                                            <p style='margin: 5px 0;'>Este es un mensaje automático del Sistema de Gestión Frigolab.</p>
+                                            <p style='margin: 5px 0;'>Por favor no responder a este correo.</p>
+                                            <p style='margin: 5px 0; color: #bbb;'>© 2026 Frigolab - Todos los derechos reservados</p>
+                                        </div>
+                                    </div>
+                                </body>
+                                </html>
+                            ";
+
+                            await _emailService.SendAlertEmailAsync(targetEmail, emailSubject, emailBody);
+                            _logger.LogInformation("  📧 EMAIL ENVIADO a {Email} ({Name})", targetEmail, targetName ?? "Sin nombre");
+                        }
+                        catch (Exception emailEx)
+                        {
+                            _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", targetEmail);
+                        }
+                    });
+                }
+
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("📨 {Count} alertas creadas para formulario {FormId}", alertasCreadas, form.FormID);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error al crear alertas iniciales para formulario {FormId}", form.FormID);
+                // No lanzar excepción para no bloquear la creación del formulario
+            }
+        }
     }
 
     // DTO para recibir datos de entrada
@@ -875,7 +1157,13 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
         public string? HeaderData { get; set; }
         public string? BodyData { get; set; }
         public string? FirmasData { get; set; }
+        public string? TipoProducto { get; set; } // 🦐🐟 NUEVO: Tipo de producto
         public string? Observaciones { get; set; }
+        
+        // ✅ AUDITORÍA: Datos del usuario que crea el formulario
+        public string? FilledBy { get; set; }
+        public string? FilledByEmail { get; set; }
+        public string? FilledByRole { get; set; }
     }
 
     // DTO para autoguardado (campos opcionales)
@@ -884,6 +1172,8 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
         public string? HeaderData { get; set; }
         public string? BodyData { get; set; }
         public string? FirmasData { get; set; }
+        public string? TipoProducto { get; set; } // 🦐🐟 NUEVO
         public string? Observaciones { get; set; }
     }
 }
+

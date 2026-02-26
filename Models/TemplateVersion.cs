@@ -34,7 +34,7 @@ namespace FormBuilder.API.Models
         [MaxLength(200)]
         public string Nombre { get; set; } = string.Empty;
 
-        public string? Objetivo { get; set; }
+        public string? Supervisa { get; set; }
         public string? Proceso { get; set; }
         public string? CuandoSeUsa { get; set; }
         public string? QuienLoLlena { get; set; }

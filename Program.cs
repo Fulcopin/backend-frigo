@@ -1,5 +1,6 @@
 // ===== PASO 1: AÑADIR ESTOS 'using' EN LA PARTE SUPERIOR =====
 using FormBuilder.API.Data;
+using FormBuilder.API.Services;
 using Microsoft.EntityFrameworkCore;
 
 
@@ -25,6 +26,10 @@ builder.Services.AddCors(options =>
 // 2b. Registrar el DbContext para la conexión a la base de datos
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// ✅ NUEVOS SERVICIOS: Email y Alertas
+builder.Services.AddScoped<IEmailService, GmailService>();
+builder.Services.AddHostedService<AlertBackgroundService>();
 
 // =======================================================================
 
