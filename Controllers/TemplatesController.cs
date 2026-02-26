@@ -26,13 +26,29 @@ namespace FormBuilder.API.Controllers
         //==============================================================
         // MÉTODO GET - Para obtener todas las plantillas
         // URL: GET /api/Templates
+        // ✅ MODIFICADO: Solo devuelve plantillas publicadas (no borradores)
         //==============================================================
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Template>>> GetTemplates()
         {
-            // Usa Entity Framework para ir a la base de datos, tomar todas
-            // las filas de la tabla "Templates" y devolverlas como una lista.
-            return await _context.Templates.ToListAsync();
+            // ✅ Filtra borradores: solo devuelve plantillas con IsDraft = false
+            return await _context.Templates
+                .Where(t => !t.IsDraft)
+                .OrderByDescending(t => t.CreatedAt)
+                .ToListAsync();
+        }
+
+        //==============================================================
+        // ✅ NUEVO: Endpoint para obtener solo borradores
+        // URL: GET /api/Templates/drafts
+        //==============================================================
+        [HttpGet("drafts")]
+        public async Task<ActionResult<IEnumerable<Template>>> GetDrafts()
+        {
+            return await _context.Templates
+                .Where(t => t.IsDraft)
+                .OrderByDescending(t => t.CreatedAt)
+                .ToListAsync();
         }
 
         //==============================================================
@@ -77,7 +93,7 @@ namespace FormBuilder.API.Controllers
                 template.Codigo,
                 template.Nombre,
                 template.Version,
-                template.Objetivo,
+                template.Supervisa,
                 template.Proceso,
                 template.CuandoSeUsa,
                 template.QuienLoLlena,
@@ -129,13 +145,14 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
     // Comparamos cada propiedad. Si el JSON cambió (aunque sea una coma), se detecta.
     bool cambioAlgo = 
         oldTemplate.Nombre != template.Nombre ||
-        oldTemplate.Objetivo != template.Objetivo ||
+        oldTemplate.Supervisa != template.Supervisa ||
         oldTemplate.Proceso != template.Proceso ||
         oldTemplate.FechaVersion != template.FechaVersion ||
         oldTemplate.Version != template.Version ||
         oldTemplate.HeaderFields != template.HeaderFields ||
         oldTemplate.BodyElements != template.BodyElements ||
-        oldTemplate.Firmas != template.Firmas;
+        oldTemplate.Firmas != template.Firmas ||
+        oldTemplate.IsMasterForm != template.IsMasterForm;
 
     if (cambioAlgo)
     {
@@ -147,7 +164,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
             FechaVersion = oldTemplate.FechaVersion,
             Codigo = oldTemplate.Codigo,
             Nombre = oldTemplate.Nombre,
-            Objetivo = oldTemplate.Objetivo,
+            Supervisa = oldTemplate.Supervisa,
             Proceso = oldTemplate.Proceso,
             HeaderFields = oldTemplate.HeaderFields,
             BodyElements = oldTemplate.BodyElements,
@@ -341,8 +358,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
             return Ok(versionHistory);
         }
 
-        // GET: api/Templates/5/versions/02-01
-        // Obtiene los detalles de una versión específica
+        
         [HttpGet("{id}/versions/{version}")]
         public async Task<ActionResult<TemplateVersionDetailDto>> GetVersionDetail(int id, string version)
         {
@@ -392,7 +408,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
                     TemplateID = currentTemplate.TemplateID,
                     Codigo = currentTemplate.Codigo ?? "",
                     Nombre = currentTemplate.Nombre ?? "",
-                    Objetivo = currentTemplate.Objetivo,
+                    Supervisa = currentTemplate.Supervisa,
                     Proceso = currentTemplate.Proceso,
                     HeaderFields = currentTemplate.HeaderFields,
                     BodyElements = currentTemplate.BodyElements,
@@ -422,7 +438,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
                     TemplateID = versionSnapshot.TemplateID,
                     Codigo = versionSnapshot.Codigo,
                     Nombre = versionSnapshot.Nombre,
-                    Objetivo = versionSnapshot.Objetivo,
+                    Supervisa = versionSnapshot.Supervisa,
                     Proceso = versionSnapshot.Proceso,
                     HeaderFields = versionSnapshot.HeaderFields,
                     BodyElements = versionSnapshot.BodyElements,
@@ -462,7 +478,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
                             TemplateID = id,
                             Codigo = snapshot.Codigo ?? "",
                             Nombre = snapshot.Nombre ?? "",
-                            Objetivo = snapshot.Objetivo,
+                            Supervisa = snapshot.Supervisa,
                             Proceso = snapshot.Proceso,
                             HeaderFields = snapshot.HeaderFields,
                             BodyElements = snapshot.BodyElements,
@@ -485,7 +501,7 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
                 TemplateID = id,
                 Codigo = currentTemplate.Codigo ?? "",
                 Nombre = $"{currentTemplate.Nombre} (Versión {version})",
-                Objetivo = "Snapshot no disponible - versión histórica",
+                Supervisa = "Snapshot no disponible - versión histórica",
                 Proceso = currentTemplate.Proceso,
                 HeaderFields = null,
                 BodyElements = null,
@@ -535,8 +551,8 @@ public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
     if (oldData.Nombre != newData.Nombre)
         comparison.DetailedChanges.MetadataChanges.Add($"Nombre modificado: '{oldData.Nombre}' → '{newData.Nombre}'");
 
-    if (oldData.Objetivo != newData.Objetivo)
-        comparison.DetailedChanges.MetadataChanges.Add($"Objetivo: El texto del objetivo ha cambiado.");
+    if (oldData.Supervisa != newData.Supervisa)
+        comparison.DetailedChanges.MetadataChanges.Add($"Supervisa: Qui�n supervisa ha cambiado ha cambiado.");
 
     // 2. Comparar HeaderFields usando tu método existente
     var headerChanges = CompareHeaderFields(oldData.HeaderFields, newData.HeaderFields);
@@ -873,7 +889,7 @@ public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
                     TemplateID = currentTemplate.TemplateID,
                     Codigo = currentTemplate.Codigo ?? "",
                     Nombre = currentTemplate.Nombre ?? "",
-                    Objetivo = currentTemplate.Objetivo,
+                    Supervisa = currentTemplate.Supervisa,
                     Proceso = currentTemplate.Proceso,
                     HeaderFields = currentTemplate.HeaderFields,
                     BodyElements = currentTemplate.BodyElements,
@@ -903,7 +919,7 @@ public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
                             TemplateID = id,
                             Codigo = snapshot.Codigo ?? "",
                             Nombre = snapshot.Nombre ?? "",
-                            Objetivo = snapshot.Objetivo,
+                            Supervisa = snapshot.Supervisa,
                             Proceso = snapshot.Proceso,
                             HeaderFields = snapshot.HeaderFields,
                             BodyElements = snapshot.BodyElements,
@@ -925,7 +941,7 @@ public async Task<ActionResult<VersionComparisonDto>> CompareVersions(
                 TemplateID = id,
                 Codigo = currentTemplate.Codigo ?? "",
                 Nombre = $"{currentTemplate.Nombre} (Versión {version})",
-                Objetivo = "Snapshot no disponible - versión histórica",
+                Supervisa = "Snapshot no disponible - versión histórica",
                 Proceso = currentTemplate.Proceso,
                 HeaderFields = null,
                 BodyElements = null,
@@ -977,3 +993,5 @@ private List<FieldChangeDto> CompareSignatures(string? json1, string? json2)
 public class FirmaItem { public string puesto { get; set; } = ""; }
     }
 }
+
+

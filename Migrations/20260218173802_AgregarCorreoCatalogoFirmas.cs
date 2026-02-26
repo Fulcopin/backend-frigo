@@ -1,20 +1,20 @@
-﻿using System;
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace FormBuilder.API.Migrations
 {
     /// <inheritdoc />
-    public partial class AddUpdatedAtToFilledForm : Migration
+    public partial class AgregarCorreoCatalogoFirmas : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<DateTime>(
-                name: "UpdatedAt",
-                table: "FilledForms",
-                type: "datetime2",
+            migrationBuilder.AddColumn<string>(
+                name: "Correo",
+                table: "CatalogoFirmas",
+                type: "nvarchar(150)",
+                maxLength: 150,
                 nullable: true);
         }
 
@@ -22,8 +22,8 @@ namespace FormBuilder.API.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
-                name: "UpdatedAt",
-                table: "FilledForms");
+                name: "Correo",
+                table: "CatalogoFirmas");
         }
     }
 }

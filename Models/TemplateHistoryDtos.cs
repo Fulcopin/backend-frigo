@@ -20,7 +20,7 @@ namespace FormBuilder.API.Models
         public int TemplateID { get; set; }
         public string Codigo { get; set; } = string.Empty;
         public string Nombre { get; set; } = string.Empty;
-        public string? Objetivo { get; set; }
+        public string? Supervisa { get; set; }
         public string? Proceso { get; set; }
         public string? HeaderFields { get; set; }
         public string? BodyElements { get; set; }

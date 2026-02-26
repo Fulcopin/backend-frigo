@@ -24,10 +24,17 @@ namespace FormBuilder.API.Models
         // Fecha en que entra en vigor esta versión
         public DateTime? FechaVersion { get; set; }
 
-        public string? Objetivo { get; set; }
+        public string? Supervisa { get; set; }
         public string? Proceso { get; set; }
         public string? CuandoSeUsa { get; set; }
         public string? QuienLoLlena { get; set; }
+
+        // Campos adicionales para módulos de Firmas, Alertas y Consumos
+        [StringLength(100)]
+        public string? Area { get; set; }
+        
+        [StringLength(50)]
+        public string? Frecuencia { get; set; } // "Diaria", "Semanal", "Mensual", etc.
 
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderFields { get; set; }
@@ -42,6 +49,15 @@ namespace FormBuilder.API.Models
 
         [Column(TypeName = "nvarchar(max)")]
         public string? Firmas { get; set; }
+
+        // ✅ NUEVO: Indica si la plantilla es un borrador (no publicada)
+        public bool IsDraft { get; set; } = false;
+
+        // ✅ Indica si la plantilla tiene auto-suma activada (para tablas con columnas PESO/TOTAL)
+        public bool IsMasterForm { get; set; } = false;
+
+        // ✅ NUEVO: Indica si la plantilla necesita datos de la API externa (ERP)
+        public bool UsaApi { get; set; } = false;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }

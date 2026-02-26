@@ -16,6 +16,13 @@ namespace FormBuilder.API.Data
         public DbSet<SourceForm> SourceForms { get; set; }
         public DbSet<TemplateVersion> TemplateVersions { get; set; } // ✅ NUEVO: Historial de versiones
         
+        // Nuevos módulos: Firmas, Alertas y Consumos
+        public DbSet<Signature> Signatures { get; set; }
+        public DbSet<Alert> Alerts { get; set; }
+        public DbSet<AlertConfiguration> AlertConfigurations { get; set; }
+        public DbSet<CatalogoFirma> CatalogoFirmas { get; set; } // ✅ NUEVO: Catálogo de firmas
+        public DbSet<FormDraft> FormDrafts { get; set; } // ✅ NUEVO: Borradores de formularios
+        
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }
 

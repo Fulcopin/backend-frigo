@@ -101,7 +101,7 @@ namespace FormBuilder.API.Controllers
                 Codigo = "FRM-TINAS-15-VERTICAL",
                 Nombre = "Registro 15 Tinas (Filas Verticales)",
                 Version = "10-00",
-                Objetivo = "Registro de pesadas de 15 tinas en formato tabla vertical",
+                Supervisa = "Registro de pesadas de 15 tinas en formato tabla vertical",
                 Proceso = "Producción",
                 CuandoSeUsa = "Control de producción con múltiples tinas",
                 QuienLoLlena = "Asistente de Producción",
@@ -145,3 +145,4 @@ namespace FormBuilder.API.Controllers
         }
     }
 }
+

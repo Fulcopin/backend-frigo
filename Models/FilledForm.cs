@@ -25,6 +25,16 @@ namespace FormBuilder.API.Models
         // NUEVO: Fecha de la versión del template
         public DateTime? FechaVersion { get; set; }
 
+        // ✅ AUDITORÍA: Información del usuario que llenó el formulario
+        [StringLength(200)]
+        public string? FilledBy { get; set; }  // Nombre del usuario
+        
+        [StringLength(200)]
+        public string? FilledByEmail { get; set; }  // Email del usuario
+        
+        [StringLength(100)]
+        public string? FilledByRole { get; set; }  // Rol del usuario
+
         [Column(TypeName = "nvarchar(max)")]
         public string? HeaderData { get; set; }
         
@@ -34,6 +44,10 @@ namespace FormBuilder.API.Models
 
         [Column(TypeName = "nvarchar(max)")]
         public string? FirmasData { get; set; }
+
+        // 🦐🐟 NUEVO: Tipo de producto (Camarón o Pescado)
+        [StringLength(50)]
+        public string? TipoProducto { get; set; }
 
         [Column(TypeName = "nvarchar(max)")]
         public string? Observaciones { get; set; }
