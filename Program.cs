@@ -31,6 +31,12 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddScoped<IEmailService, GmailService>();
 builder.Services.AddHostedService<AlertBackgroundService>();
 
+// ✅ HttpClient para el ProxyController (reenvío a API externa)
+builder.Services.AddHttpClient("ExternalApi", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 // =======================================================================
 
 
