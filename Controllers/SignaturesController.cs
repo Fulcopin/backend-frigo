@@ -271,7 +271,7 @@ namespace FormBuilder.API.Controllers
 
                     TotalSigned = await _context.Signatures.CountAsync(),
 
-                    RejectedCount = 0
+                    RejectedCount = await _context.SignatureRejections.CountAsync()
                 };
 
                 return Ok(stats);
@@ -350,16 +350,36 @@ namespace FormBuilder.API.Controllers
         {
             try
             {
-                var form = await _context.FilledForms.FindAsync(formId);
+                var form = await _context.FilledForms
+                    .Include(f => f.Template)
+                    .FirstOrDefaultAsync(f => f.FormID == formId);
                 if (form == null)
                 {
                     return NotFound(new { message = "Formulario no encontrado" });
                 }
 
+                // Registrar el rechazo en la tabla SignatureRejections
+                var rejection = new SignatureRejection
+                {
+                    FilledFormId = formId,
+                    RejectedBy = request.RejectedBy,
+                    RejectedDate = request.RejectedDate != default ? request.RejectedDate : DateTime.UtcNow,
+                    Reason = request.Reason, // Campo OPCIONAL
+                    Status = "rejected"
+                };
+
+                _context.SignatureRejections.Add(rejection);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Formulario {FormId} rechazado por {RejectedBy}. Motivo: {Reason}",
+                    formId, request.RejectedBy, request.Reason ?? "Sin motivo especificado");
+
                 return Ok(new
                 {
                     success = true,
-                    message = "Formulario rechazado exitosamente"
+                    message = "Formulario rechazado exitosamente",
+                    rejectionId = rejection.Id,
+                    reason = rejection.Reason
                 });
             }
             catch (Exception ex)
@@ -367,6 +387,150 @@ namespace FormBuilder.API.Controllers
                 _logger.LogError(ex, "Error al rechazar formulario");
                 return StatusCode(500, new { message = "Error al rechazar formulario" });
             }
+        }
+
+        // GET /api/Signatures/timing-report
+        /// <summary>
+        /// Reporte de tiempos de firma: muestra cuánto se demoran en firmar y motivos de rechazo
+        /// </summary>
+        [HttpGet("timing-report")]
+        public async Task<ActionResult<SignatureTimingSummary>> GetTimingReport([FromQuery] int? days = 30)
+        {
+            try
+            {
+                var cutoffDate = DateTime.UtcNow.AddDays(-days.Value);
+
+                // Obtener todos los formularios con sus firmas y rechazos
+                var forms = await _context.FilledForms
+                    .Include(f => f.Template)
+                    .Where(f => f.CreatedAt >= cutoffDate)
+                    .Select(f => new
+                    {
+                        f.FormID,
+                        TemplateName = f.Template!.Nombre ?? "Sin nombre",
+                        FormCode = f.Template!.Codigo ?? "N/A",
+                        Area = f.Template.Proceso ?? f.Template.Area ?? "N/A",
+                        f.CreatedAt,
+                        Signature = _context.Signatures
+                            .Where(s => s.FilledFormId == f.FormID)
+                            .OrderByDescending(s => s.SignedDate)
+                            .FirstOrDefault(),
+                        Rejection = _context.SignatureRejections
+                            .Where(r => r.FilledFormId == f.FormID)
+                            .OrderByDescending(r => r.RejectedDate)
+                            .FirstOrDefault()
+                    })
+                    .ToListAsync();
+
+                var details = forms.Select(f =>
+                {
+                    double? hoursToSign = null;
+                    string status = "pending";
+                    string? timingLabel = null;
+
+                    if (f.Signature != null)
+                    {
+                        hoursToSign = (f.Signature.SignedDate - f.CreatedAt).TotalHours;
+                        status = "signed";
+                        timingLabel = FormatTimeDifference(f.Signature.SignedDate - f.CreatedAt);
+                    }
+                    else if (f.Rejection != null)
+                    {
+                        status = "rejected";
+                    }
+
+                    return new SignatureTimingReport
+                    {
+                        FilledFormId = f.FormID,
+                        TemplateName = f.TemplateName,
+                        FormCode = f.FormCode,
+                        Area = f.Area,
+                        CreatedDate = f.CreatedAt,
+                        SignedDate = f.Signature?.SignedDate,
+                        SignedBy = f.Signature?.SignedBy,
+                        HoursToSign = hoursToSign,
+                        TimingLabel = timingLabel,
+                        Status = status,
+                        RejectionReason = f.Rejection?.Reason,
+                        RejectedBy = f.Rejection?.RejectedBy,
+                        RejectedDate = f.Rejection?.RejectedDate
+                    };
+                }).OrderByDescending(f => f.CreatedDate).ToList();
+
+                var signedItems = details.Where(d => d.Status == "signed" && d.HoursToSign.HasValue).ToList();
+
+                var summary = new SignatureTimingSummary
+                {
+                    AverageHoursToSign = signedItems.Any() ? Math.Round(signedItems.Average(s => s.HoursToSign!.Value), 2) : 0,
+                    FastestHours = signedItems.Any() ? Math.Round(signedItems.Min(s => s.HoursToSign!.Value), 2) : 0,
+                    SlowestHours = signedItems.Any() ? Math.Round(signedItems.Max(s => s.HoursToSign!.Value), 2) : 0,
+                    TotalSigned = details.Count(d => d.Status == "signed"),
+                    TotalPending = details.Count(d => d.Status == "pending"),
+                    TotalRejected = details.Count(d => d.Status == "rejected"),
+                    SignedWithin24h = signedItems.Count(s => s.HoursToSign < 24),
+                    SignedAfter24h = signedItems.Count(s => s.HoursToSign >= 24 && s.HoursToSign < 72),
+                    SignedAfter72h = signedItems.Count(s => s.HoursToSign >= 72),
+                    Details = details
+                };
+
+                return Ok(summary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al generar reporte de tiempos de firma");
+                return StatusCode(500, new { message = "Error al generar reporte de tiempos" });
+            }
+        }
+
+        // GET /api/Signatures/rejections
+        /// <summary>
+        /// Obtener todos los rechazos con sus motivos
+        /// </summary>
+        [HttpGet("rejections")]
+        public async Task<ActionResult> GetRejections([FromQuery] int? days = 30)
+        {
+            try
+            {
+                var cutoffDate = DateTime.UtcNow.AddDays(-days.Value);
+
+                var rejections = await _context.SignatureRejections
+                    .Where(r => r.RejectedDate >= cutoffDate)
+                    .Join(_context.FilledForms.Include(f => f.Template),
+                        r => r.FilledFormId,
+                        f => f.FormID,
+                        (r, f) => new
+                        {
+                            r.Id,
+                            r.FilledFormId,
+                            TemplateName = f.Template!.Nombre ?? "Sin nombre",
+                            FormCode = f.Template!.Codigo ?? "N/A",
+                            Area = f.Template.Proceso ?? "N/A",
+                            r.RejectedBy,
+                            r.RejectedDate,
+                            Reason = r.Reason ?? "Sin motivo especificado",
+                            r.Status
+                        })
+                    .OrderByDescending(r => r.RejectedDate)
+                    .ToListAsync();
+
+                return Ok(rejections);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al obtener rechazos");
+                return StatusCode(500, new { message = "Error al obtener rechazos" });
+            }
+        }
+
+        private static string FormatTimeDifference(TimeSpan diff)
+        {
+            if (diff.TotalMinutes < 60)
+                return $"{(int)diff.TotalMinutes} min";
+            if (diff.TotalHours < 24)
+                return $"{(int)diff.TotalHours}h {diff.Minutes}min";
+            if (diff.TotalDays < 7)
+                return $"{(int)diff.TotalDays}d {diff.Hours}h";
+            return $"{(int)diff.TotalDays} días";
         }
 
         // PUT /api/Signatures/update-date/{signatureId}

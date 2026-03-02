@@ -4,6 +4,7 @@ using FormBuilder.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace FormBuilder.API.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260302174716_AddIsObsoleteToTemplate")]
+    partial class AddIsObsoleteToTemplate
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -325,40 +328,6 @@ namespace FormBuilder.API.Migrations
                     b.ToTable("Signatures");
                 });
 
-            modelBuilder.Entity("FormBuilder.API.Models.SignatureRejection", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("FilledFormId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Reason")
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<string>("RejectedBy")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime>("RejectedDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("FilledFormId");
-
-                    b.ToTable("SignatureRejections");
-                });
-
             modelBuilder.Entity("FormBuilder.API.Models.SourceForm", b =>
                 {
                     b.Property<int>("SourceFormID")
@@ -418,9 +387,6 @@ namespace FormBuilder.API.Migrations
                     b.Property<string>("Area")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
-
-                    b.Property<bool>("AutoSumColumns")
-                        .HasColumnType("bit");
 
                     b.Property<string>("BodyElements")
                         .HasColumnType("nvarchar(max)");
@@ -580,17 +546,6 @@ namespace FormBuilder.API.Migrations
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.Signature", b =>
-                {
-                    b.HasOne("FormBuilder.API.Models.FilledForm", "FilledForm")
-                        .WithMany()
-                        .HasForeignKey("FilledFormId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("FilledForm");
-                });
-
-            modelBuilder.Entity("FormBuilder.API.Models.SignatureRejection", b =>
                 {
                     b.HasOne("FormBuilder.API.Models.FilledForm", "FilledForm")
                         .WithMany()

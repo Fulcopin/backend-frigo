@@ -79,4 +79,72 @@ namespace FormBuilder.API.Models
         public int TotalSigned { get; set; }
         public int RejectedCount { get; set; }
     }
+
+    /// <summary>
+    /// Modelo para registrar rechazos de firma con motivo opcional
+    /// </summary>
+    public class SignatureRejection
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required]
+        public int FilledFormId { get; set; }
+
+        [Required]
+        public string RejectedBy { get; set; } = string.Empty;
+
+        public DateTime RejectedDate { get; set; } = DateTime.UtcNow;
+
+        /// <summary>
+        /// Motivo del rechazo (OPCIONAL)
+        /// </summary>
+        [StringLength(1000)]
+        public string? Reason { get; set; }
+
+        /// <summary>
+        /// Estado: rejected, returned, etc.
+        /// </summary>
+        [StringLength(50)]
+        public string Status { get; set; } = "rejected";
+
+        public virtual FilledForm? FilledForm { get; set; }
+    }
+
+    /// <summary>
+    /// DTO de respuesta para reporte de tiempos de firma
+    /// </summary>
+    public class SignatureTimingReport
+    {
+        public int FilledFormId { get; set; }
+        public string TemplateName { get; set; } = string.Empty;
+        public string FormCode { get; set; } = string.Empty;
+        public string Area { get; set; } = string.Empty;
+        public DateTime CreatedDate { get; set; }
+        public DateTime? SignedDate { get; set; }
+        public string? SignedBy { get; set; }
+        public double? HoursToSign { get; set; }
+        public string? TimingLabel { get; set; }
+        public string Status { get; set; } = "pending"; // pending, signed, rejected
+        public string? RejectionReason { get; set; }
+        public string? RejectedBy { get; set; }
+        public DateTime? RejectedDate { get; set; }
+    }
+
+    /// <summary>
+    /// DTO de resumen de tiempos
+    /// </summary>
+    public class SignatureTimingSummary
+    {
+        public double AverageHoursToSign { get; set; }
+        public double FastestHours { get; set; }
+        public double SlowestHours { get; set; }
+        public int TotalSigned { get; set; }
+        public int TotalPending { get; set; }
+        public int TotalRejected { get; set; }
+        public int SignedWithin24h { get; set; }
+        public int SignedAfter24h { get; set; }
+        public int SignedAfter72h { get; set; }
+        public List<SignatureTimingReport> Details { get; set; } = new();
+    }
 }

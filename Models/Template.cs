@@ -53,11 +53,17 @@ namespace FormBuilder.API.Models
         // ✅ NUEVO: Indica si la plantilla es un borrador (no publicada)
         public bool IsDraft { get; set; } = false;
 
-        // ✅ Indica si la plantilla tiene auto-suma activada (para tablas con columnas PESO/TOTAL)
+        // ✅ Indica si la plantilla tiene auto-suma de FILAS activada (para tablas con columnas PESO/TOTAL)
         public bool IsMasterForm { get; set; } = false;
+
+        // ✅ NUEVO: Indica si la plantilla muestra totales automáticos por COLUMNA (suma al pie de tabla)
+        public bool AutoSumColumns { get; set; } = false;
 
         // ✅ NUEVO: Indica si la plantilla necesita datos de la API externa (ERP)
         public bool UsaApi { get; set; } = false;
+
+        // ✅ NUEVO: Indica si la plantilla está obsoleta (no aparece en listado para llenar pero se conservan registros)
+        public bool IsObsolete { get; set; } = false;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }

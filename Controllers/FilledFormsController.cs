@@ -478,6 +478,19 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 return NotFound();
             }
 
+            // Eliminar registros relacionados para evitar error de FK
+            var relatedSignatures = await _context.Signatures
+                .Where(s => s.FilledFormId == id)
+                .ToListAsync();
+            if (relatedSignatures.Any())
+                _context.Signatures.RemoveRange(relatedSignatures);
+
+            var relatedAlerts = await _context.Alerts
+                .Where(a => a.FormId == id)
+                .ToListAsync();
+            if (relatedAlerts.Any())
+                _context.Alerts.RemoveRange(relatedAlerts);
+
             _context.FilledForms.Remove(filledForm);
             await _context.SaveChangesAsync();
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
+using FormBuilder.API.Services;
 using System.Text.Json; // ✅ Esto quita el error de JsonSerializer
 namespace FormBuilder.API.Controllers
 {
@@ -14,13 +15,17 @@ namespace FormBuilder.API.Controllers
     {
         // Esta variable privada guardará la conexión a la base de datos.
         private readonly ApplicationDbContext _context;
+        private readonly IEmailService _emailService;
+        private readonly ILogger<TemplatesController> _logger;
 
         // Este es el "constructor". Cuando se crea el controlador para manejar
         // una petición, .NET automáticamente le pasa la conexión a la base de datos
         // (esto se configuró en Program.cs).
-        public TemplatesController(ApplicationDbContext context)
+        public TemplatesController(ApplicationDbContext context, IEmailService emailService, ILogger<TemplatesController> logger)
         {
             _context = context;
+            _emailService = emailService;
+            _logger = logger;
         }
 
         //==============================================================
@@ -31,7 +36,21 @@ namespace FormBuilder.API.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Template>>> GetTemplates()
         {
-            // ✅ Filtra borradores: solo devuelve plantillas con IsDraft = false
+            // ✅ Filtra borradores y obsoletas: solo devuelve plantillas activas
+            return await _context.Templates
+                .Where(t => !t.IsDraft && !t.IsObsolete)
+                .OrderByDescending(t => t.CreatedAt)
+                .ToListAsync();
+        }
+
+        //==============================================================
+        // ✅ NUEVO: Endpoint para obtener TODAS las plantillas (incluyendo obsoletas)
+        // URL: GET /api/Templates/all
+        // Usado por ManageTemplates para que el admin vea todo
+        //==============================================================
+        [HttpGet("all")]
+        public async Task<ActionResult<IEnumerable<Template>>> GetAllTemplates()
+        {
             return await _context.Templates
                 .Where(t => !t.IsDraft)
                 .OrderByDescending(t => t.CreatedAt)
@@ -178,6 +197,69 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
     template.UpdatedAt = DateTime.UtcNow;
     _context.Entry(template).State = EntityState.Modified;
     await _context.SaveChangesAsync();
+
+    // 🔔 ALERTAS: Notificar a todos los firmantes cuando cambia la versión
+    if (cambioAlgo)
+    {
+        try
+        {
+            var firmasJson = template.Firmas;
+            if (!string.IsNullOrEmpty(firmasJson))
+            {
+                var firmas = JsonSerializer.Deserialize<List<FirmaAlertInfo>>(firmasJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (firmas != null)
+                {
+                    var nombres = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var f in firmas)
+                    {
+                        if (!string.IsNullOrWhiteSpace(f.NombreCompleto)) nombres.Add(f.NombreCompleto);
+                        if (f.JefeAlerta != null)
+                            foreach (var j in f.JefeAlerta)
+                                if (!string.IsNullOrWhiteSpace(j)) nombres.Add(j);
+                        if (f.Reemplazos != null)
+                            foreach (var r in f.Reemplazos)
+                                if (!string.IsNullOrWhiteSpace(r)) nombres.Add(r);
+                    }
+
+                    if (nombres.Count > 0)
+                    {
+                        var subject = $"🔄 Plantilla Actualizada: {template.Codigo} - {template.Nombre} (v{template.Version})";
+                        var body = $"<html><body style='font-family:Arial;padding:20px;'>"
+                            + $"<div style='background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0;'>"
+                            + $"<h2 style='margin:0;'>🔄 Modificación de Plantilla</h2></div>"
+                            + $"<div style='border:1px solid #e5e7eb;padding:20px;border-radius:0 0 8px 8px;'>"
+                            + $"<p><strong>Código:</strong> {template.Codigo}</p>"
+                            + $"<p><strong>Nombre:</strong> {template.Nombre}</p>"
+                            + $"<p><strong>Nueva Versión:</strong> {template.Version}</p>"
+                            + $"<p><strong>Fecha:</strong> {DateTime.Now:dd/MM/yyyy HH:mm}</p>"
+                            + $"<p><strong>Motivo:</strong> Actualización de estructura/datos detectada</p>"
+                            + $"<hr style='border:1px solid #e5e7eb;'/>"
+                            + $"<p style='color:#6b7280;font-size:12px;'>Este correo se genera automáticamente cuando se modifica una plantilla. Por favor revise los cambios.</p>"
+                            + $"</div></body></html>";
+
+                        // Buscar emails reales de los nombres via CatalogoFirmas
+                        var catalogo = await _context.CatalogoFirmas.ToListAsync();
+
+                        foreach (var nombre in nombres)
+                        {
+                            var entry = catalogo.FirstOrDefault(c =>
+                                (c.NombreCompleto ?? "").Equals(nombre, StringComparison.OrdinalIgnoreCase));
+                            var correo = entry?.Correo;
+                            if (!string.IsNullOrWhiteSpace(correo))
+                            {
+                                await _emailService.SendAlertEmailAsync(correo, subject, body);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log silencioso - no bloquear el guardado por fallo de email
+            _logger.LogWarning(ex, "Error enviando alertas de versión para plantilla {Id}", id);
+        }
+    }
 
     return NoContent();
 }
