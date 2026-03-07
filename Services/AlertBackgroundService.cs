@@ -147,8 +147,16 @@ namespace FormBuilder.API.Services
 
                     if (!existingAlert)
                     {
-                        // 1) Enviar a los recipients configurados globalmente (SGI)
+                        // 1) Enviar a los recipients configurados globalmente (SGI) + responsable creador
                         var recipients = ParseRecipients(config.SignatureRecipients);
+                        if (!string.IsNullOrWhiteSpace(form.FilledByEmail))
+                        {
+                            recipients.Add(form.FilledByEmail.Trim());
+                        }
+                        recipients = recipients
+                            .Where(e => !string.IsNullOrWhiteSpace(e))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
 
                         foreach (var recipientEmail in recipients)
                         {

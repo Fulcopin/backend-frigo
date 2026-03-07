@@ -20,6 +20,12 @@ namespace FormBuilder.API.Services
             {
                 var smtpServer = _configuration["GmailSettings:SmtpServer"];
                 var smtpPort = int.Parse(_configuration["GmailSettings:SmtpPort"] ?? "587");
+                var enableSslRaw = _configuration["GmailSettings:EnableSsl"];
+                var enableSsl = true;
+                if (!string.IsNullOrWhiteSpace(enableSslRaw) && bool.TryParse(enableSslRaw, out var parsedEnableSsl))
+                {
+                    enableSsl = parsedEnableSsl;
+                }
                 var senderEmail = _configuration["GmailSettings:SenderEmail"];
                 var senderPassword = _configuration["GmailSettings:SenderPassword"];
                 var senderName = _configuration["GmailSettings:SenderName"];
@@ -41,7 +47,7 @@ namespace FormBuilder.API.Services
                     using (var client = new SmtpClient(smtpServer, smtpPort))
                     {
                         client.UseDefaultCredentials = false;
-                        client.EnableSsl = true;
+                        client.EnableSsl = enableSsl;
                         client.Credentials = new NetworkCredential(senderEmail, senderPassword);
                         client.DeliveryMethod = SmtpDeliveryMethod.Network;
                         await client.SendMailAsync(message);
