@@ -61,6 +61,29 @@ namespace FormBuilder.API.Controllers
             return Ok(result);
         }
 
+        // 🆕 ENDPOINT LIGERO: Lista de formularios sin datos pesados (para importador de columnas)
+        [HttpGet("list")]
+        public async Task<ActionResult<IEnumerable<object>>> GetFilledFormsList()
+        {
+            var forms = await _context.FilledForms
+                                 .Include(f => f.Template)
+                                 .OrderByDescending(f => f.CreatedAt)
+                                 .Take(100)
+                                 .Select(f => new
+                                 {
+                                     f.FormID,
+                                     f.TemplateID,
+                                     TemplateName = f.Template != null ? f.Template.Nombre : "Sin nombre",
+                                     f.TipoProducto,
+                                     f.CreatedAt,
+                                     f.UpdatedAt,
+                                     f.FilledBy
+                                 })
+                                 .ToListAsync();
+            
+            return Ok(forms);
+        }
+
         // 🆕 NUEVO ENDPOINT: Obtener datos simples y parseados para importación
         [HttpGet("{id}/simple")]
         public async Task<ActionResult<object>> GetFilledFormSimple(int id)
@@ -954,6 +977,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                     form.FormID, formCode, firmasDict.Count);
 
                 int alertasCreadas = 0;
+                var emailsFirmantesNotificados = new List<string>();
 
                 foreach (var kvp in firmasDict)
                 {
@@ -980,16 +1004,49 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         targetName = nombreProp.GetString();
                     }
 
-                    // Fallback: buscar en nombre si contiene @
+                    // Fallback 1: buscar en nombre si contiene @
                     if (string.IsNullOrEmpty(targetEmail) && !string.IsNullOrEmpty(targetName) && targetName.Contains("@"))
                     {
                         targetEmail = targetName;
                     }
 
+                    // Fallback 2: Buscar en CatalogoFirmas por nombre
+                    if (string.IsNullOrEmpty(targetEmail) && !string.IsNullOrEmpty(targetName))
+                    {
+                        var catalogoEntry = await _context.Set<CatalogoFirma>()
+                            .FirstOrDefaultAsync(c => 
+                                c.Activo && 
+                                (c.NombreCompleto.ToLower() == targetName.ToLower() || 
+                                 c.NombreCompleto.ToLower().Contains(targetName.ToLower())));
+                        
+                        if (catalogoEntry != null && !string.IsNullOrEmpty(catalogoEntry.Correo))
+                        {
+                            targetEmail = catalogoEntry.Correo;
+                            _logger.LogInformation("  🔎 Email encontrado en CatalogoFirmas para {Name}: {Email}", 
+                                targetName, targetEmail);
+                        }
+                    }
+
+                    // Fallback 3: Buscar en CatalogoFirmas por puesto
+                    if (string.IsNullOrEmpty(targetEmail))
+                    {
+                        var catalogoEntries = await _context.Set<CatalogoFirma>()
+                            .Where(c => c.Activo && c.Puesto.ToLower().Contains(puesto.ToLower()))
+                            .ToListAsync();
+                        
+                        if (catalogoEntries.Any(c => !string.IsNullOrEmpty(c.Correo)))
+                        {
+                            targetEmail = catalogoEntries.First(c => !string.IsNullOrEmpty(c.Correo)).Correo;
+                            targetName = catalogoEntries.First(c => !string.IsNullOrEmpty(c.Correo)).NombreCompleto;
+                            _logger.LogInformation("  🔎 Email encontrado en CatalogoFirmas para puesto {Puesto}: {Email}", 
+                                puesto, targetEmail);
+                        }
+                    }
+
                     // Si no hay email asignado, saltar este puesto
                     if (string.IsNullOrEmpty(targetEmail))
                     {
-                        _logger.LogWarning("  ⚠️ Puesto {Puesto}: No se encontró email asignado, saltando", puesto);
+                        _logger.LogWarning("  ⚠️ Puesto {Puesto}: No se encontró email en FirmasData ni en CatalogoFirmas, saltando", puesto);
                         continue;
                     }
 
@@ -1042,16 +1099,15 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
 
                     _context.Set<Alert>().Add(alert);
                     alertasCreadas++;
+                    emailsFirmantesNotificados.Add(targetEmail);
                     
                     _logger.LogInformation("  ✅ ALERTA CREADA para {Email} en puesto {Puesto}", targetEmail, puesto);
 
-                    // 📧 ENVIAR EMAIL (en background para no bloquear)
-                    _ = Task.Run(async () =>
+                    // 📧 ENVIAR EMAIL (con estado real, sin fire-and-forget)
+                    try
                     {
-                        try
-                        {
-                            var emailSubject = $"✍️ Firma Requerida - {templateName}";
-                            var emailBody = $@"
+                        var emailSubject = $"✍️ Firma Requerida - {templateName}";
+                        var emailBody = $@"
                                 <html>
                                 <head>
                                     <style>
@@ -1142,14 +1198,60 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                                 </html>
                             ";
 
-                            await _emailService.SendAlertEmailAsync(targetEmail, emailSubject, emailBody);
-                            _logger.LogInformation("  📧 EMAIL ENVIADO a {Email} ({Name})", targetEmail, targetName ?? "Sin nombre");
-                        }
-                        catch (Exception emailEx)
-                        {
-                            _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", targetEmail);
-                        }
-                    });
+                        var sent = await _emailService.SendAlertEmailAsync(targetEmail, emailSubject, emailBody);
+                        alert.Status = sent ? "sent" : "failed";
+                        _logger.LogInformation("  📧 EMAIL {Result} a {Email} ({Name})", sent ? "ENVIADO" : "FALLIDO", targetEmail, targetName ?? "Sin nombre");
+                    }
+                    catch (Exception emailEx)
+                    {
+                        alert.Status = "failed";
+                        _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", targetEmail);
+                    }
+                }
+
+                // 📣 Notificar al responsable (quien creó/envió el formulario)
+                if (!string.IsNullOrWhiteSpace(form.FilledByEmail) && alertasCreadas > 0)
+                {
+                    var responsableEmail = form.FilledByEmail.Trim();
+                    var firmantes = string.Join(", ", emailsFirmantesNotificados.Distinct(StringComparer.OrdinalIgnoreCase));
+
+                    var responsableAlert = new Alert
+                    {
+                        Type = "signature_creator_notice",
+                        Priority = "medium",
+                        Title = $"Solicitudes de firma enviadas: {templateName}",
+                        Message = $"Se enviaron {alertasCreadas} solicitudes de firma para el formulario {formCode}.",
+                        TargetEmail = responsableEmail,
+                        FormId = form.FormID,
+                        FormCode = formCode,
+                        CreatedDate = DateTime.UtcNow,
+                        IsRead = false,
+                        Status = "pending"
+                    };
+
+                    _context.Set<Alert>().Add(responsableAlert);
+
+                    try
+                    {
+                        var subjectResponsable = $"📣 Solicitudes de firma enviadas - {templateName}";
+                        var bodyResponsable = $@"
+                            <html><body style='font-family: Arial, sans-serif;'>
+                                <h2>Solicitudes de firma enviadas</h2>
+                                <p>Se enviaron solicitudes de firma para el formulario <strong>{formCode}</strong> ({templateName}).</p>
+                                <p><strong>Total de firmantes notificados:</strong> {alertasCreadas}</p>
+                                <p><strong>Destinatarios:</strong> {System.Net.WebUtility.HtmlEncode(firmantes)}</p>
+                                <p>Puedes revisar el estado de firmas en el módulo de gestión de firmas/alertas.</p>
+                            </body></html>
+                        ";
+
+                        var sentResponsable = await _emailService.SendAlertEmailAsync(responsableEmail, subjectResponsable, bodyResponsable);
+                        responsableAlert.Status = sentResponsable ? "sent" : "failed";
+                    }
+                    catch (Exception exResponsable)
+                    {
+                        responsableAlert.Status = "failed";
+                        _logger.LogError(exResponsable, "❌ Error notificando al responsable {Email} para formulario {FormId}", responsableEmail, form.FormID);
+                    }
                 }
 
                 await _context.SaveChangesAsync();

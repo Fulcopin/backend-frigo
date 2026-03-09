@@ -102,6 +102,9 @@ namespace FormBuilder.API.Controllers
                 // CLAVE: Actualizar FirmasData del formulario con la firma realizada
                 UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate);
 
+                // Guardar firma y cambios al formulario ANTES de crear alertas
+                await _context.SaveChangesAsync();
+
                 // Crear alertas para firmantes pendientes
                 await CreateSignatureAlertsForPendingSigners(form, request.SignedBy);
 
@@ -257,7 +260,8 @@ namespace FormBuilder.API.Controllers
         {
             try
             {
-                var today = DateTime.Today;
+                var todayLocal = DateTime.Today;
+                var todayUtc = DateTime.UtcNow.Date;
 
                 var stats = new SignatureStatsResponse
                 {
@@ -266,7 +270,7 @@ namespace FormBuilder.API.Controllers
                         .CountAsync(),
 
                     SignedToday = await _context.Signatures
-                        .Where(s => s.SignedDate.Date == today)
+                        .Where(s => s.SignedDate.Date == todayLocal || s.SignedDate.Date == todayUtc)
                         .CountAsync(),
 
                     TotalSigned = await _context.Signatures.CountAsync(),
