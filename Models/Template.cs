@@ -65,7 +65,7 @@ namespace FormBuilder.API.Models
         // ✅ NUEVO: Indica si la plantilla está obsoleta (no aparece en listado para llenar pero se conservan registros)
         public bool IsObsolete { get; set; } = false;
 
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
         public DateTime? UpdatedAt { get; set; }
     }
 }

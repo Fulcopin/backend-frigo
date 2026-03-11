@@ -52,7 +52,8 @@ namespace FormBuilder.API.Models
         [Column(TypeName = "nvarchar(max)")]
         public string? Observaciones { get; set; }
         
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        // ✅ Hora local del servidor (NO UTC)
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
         public DateTime? UpdatedAt { get; set; }
     }
 }

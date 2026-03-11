@@ -45,7 +45,7 @@ namespace FormBuilder.API.Models
         public string? Firmas { get; set; }
 
         // Metadata de la versión
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
 
         [MaxLength(500)]
         public string? ChangeDescription { get; set; } // Descripción de qué cambió

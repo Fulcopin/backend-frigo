@@ -261,7 +261,7 @@ namespace FormBuilder.API.Controllers
             try
             {
                 var todayLocal = DateTime.Today;
-                var todayUtc = DateTime.UtcNow.Date;
+                var todayUtc = DateTime.Now.Date;
 
                 var stats = new SignatureStatsResponse
                 {
@@ -367,7 +367,7 @@ namespace FormBuilder.API.Controllers
                 {
                     FilledFormId = formId,
                     RejectedBy = request.RejectedBy,
-                    RejectedDate = request.RejectedDate != default ? request.RejectedDate : DateTime.UtcNow,
+                    RejectedDate = request.RejectedDate != default ? request.RejectedDate : DateTime.Now,
                     Reason = request.Reason, // Campo OPCIONAL
                     Status = "rejected"
                 };
@@ -402,7 +402,7 @@ namespace FormBuilder.API.Controllers
         {
             try
             {
-                var cutoffDate = DateTime.UtcNow.AddDays(-days.Value);
+                var cutoffDate = DateTime.Now.AddDays(-days.Value);
 
                 // Obtener todos los formularios con sus firmas y rechazos
                 var forms = await _context.FilledForms
@@ -495,7 +495,7 @@ namespace FormBuilder.API.Controllers
         {
             try
             {
-                var cutoffDate = DateTime.UtcNow.AddDays(-days.Value);
+                var cutoffDate = DateTime.Now.AddDays(-days.Value);
 
                 var rejections = await _context.SignatureRejections
                     .Where(r => r.RejectedDate >= cutoffDate)
@@ -667,6 +667,7 @@ namespace FormBuilder.API.Controllers
                 string existingNombre = signedBy;
                 string existingEmail = signedBy;
                 string existingFecha = signedDate.ToString("yyyy-MM-dd");
+                string existingHora = signedDate.ToString("HH:mm");
 
                 if (existingData.ValueKind == JsonValueKind.Object)
                 {
@@ -684,6 +685,8 @@ namespace FormBuilder.API.Controllers
                     ["nombre"] = existingNombre,
                     ["email"] = existingEmail,
                     ["fecha"] = existingFecha,
+                    ["hora"] = existingHora,
+                    ["fechaHoraCapturada"] = true,
                     ["firma"] = new Dictionary<string, string>
                     {
                         ["base64"] = signatureImage,
@@ -1021,7 +1024,7 @@ namespace FormBuilder.API.Controllers
                 TargetEmail = targetEmail,
                 FormId = form.FormID,
                 FormCode = formCode,
-                CreatedDate = DateTime.UtcNow,
+                CreatedDate = DateTime.Now,
                 IsRead = false,
                 Status = "pending"
             };

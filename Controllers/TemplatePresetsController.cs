@@ -119,8 +119,8 @@ namespace FormBuilder.API.Controllers
                     new { puesto = "SUPERVISOR" },
                     new { puesto = "JEFE CALIDAD" }
                 }),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now
             };
 
             _context.Templates.Add(template);

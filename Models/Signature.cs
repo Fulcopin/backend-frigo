@@ -94,7 +94,7 @@ namespace FormBuilder.API.Models
         [Required]
         public string RejectedBy { get; set; } = string.Empty;
 
-        public DateTime RejectedDate { get; set; } = DateTime.UtcNow;
+        public DateTime RejectedDate { get; set; } = DateTime.Now;
 
         /// <summary>
         /// Motivo del rechazo (OPCIONAL)

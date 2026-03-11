@@ -71,7 +71,7 @@ namespace FormBuilder.API.Models
         /// <summary>
         /// Fecha de creación del registro
         /// </summary>
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
 
         /// <summary>
         /// Fecha de última actualización

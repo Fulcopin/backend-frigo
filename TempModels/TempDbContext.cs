@@ -111,7 +111,7 @@ public partial class TempDbContext : DbContext
             entity.Property(e => e.VersionId).HasColumnName("VersionID");
             entity.Property(e => e.ChangeDescription).HasMaxLength(500);
             entity.Property(e => e.Codigo).HasMaxLength(100);
-            entity.Property(e => e.CreatedAt).HasDefaultValueSql("(getutcdate())");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("(getdate())");
             entity.Property(e => e.ModifiedBy).HasMaxLength(100);
             entity.Property(e => e.Nombre).HasMaxLength(200);
             entity.Property(e => e.TemplateId).HasColumnName("TemplateID");

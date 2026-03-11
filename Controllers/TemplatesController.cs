@@ -188,13 +188,13 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
             HeaderFields = oldTemplate.HeaderFields,
             BodyElements = oldTemplate.BodyElements,
             Firmas = oldTemplate.Firmas,
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.Now,
             ChangeDescription = "Actualización de estructura/datos detectada"
         };
         _context.TemplateVersions.Add(historyEntry);
     }
 
-    template.UpdatedAt = DateTime.UtcNow;
+    template.UpdatedAt = DateTime.Now;
     _context.Entry(template).State = EntityState.Modified;
     await _context.SaveChangesAsync();
 

@@ -157,7 +157,7 @@ namespace FormBuilder.API.Controllers
                 Metadata = metadataJson,
                 CreatedBy = dto.CreatedBy,
                 Notes = dto.Notes,
-                CreatedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.Now,
                 IsActive = true
             };
 
@@ -208,7 +208,7 @@ namespace FormBuilder.API.Controllers
             sourceForm.RecordCode = dto.RecordCode;
             sourceForm.RecordDate = dto.RecordDate;
             sourceForm.Notes = dto.Notes;
-            sourceForm.UpdatedAt = DateTime.UtcNow;
+            sourceForm.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
 
@@ -231,7 +231,7 @@ namespace FormBuilder.API.Controllers
 
             // Soft delete
             sourceForm.IsActive = false;
-            sourceForm.UpdatedAt = DateTime.UtcNow;
+            sourceForm.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
 

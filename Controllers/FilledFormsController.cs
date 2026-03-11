@@ -122,7 +122,46 @@ namespace FormBuilder.API.Controllers
                 bodyDataParsed = new { raw = filledForm.BodyData };
             }
 
+            // Parsear BodyElements del TemplateSnapshot para obtener títulos de tablas
+            object? templateBodyElements = null;
+            try {
+                if (!string.IsNullOrEmpty(filledForm.TemplateSnapshot)) {
+                    using var snapshotDoc = JsonDocument.Parse(filledForm.TemplateSnapshot);
+                    if (snapshotDoc.RootElement.TryGetProperty("BodyElements", out var bodyElProp)) {
+                        var bodyElStr = bodyElProp.GetString();
+                        if (!string.IsNullOrEmpty(bodyElStr)) {
+                            templateBodyElements = JsonSerializer.Deserialize<object>(bodyElStr);
+                        }
+                    }
+                }
+            } catch {
+                // Si falla, intentar con la plantilla directamente
+                try {
+                    if (filledForm.Template != null && !string.IsNullOrEmpty(filledForm.Template.BodyElements)) {
+                        templateBodyElements = JsonSerializer.Deserialize<object>(filledForm.Template.BodyElements);
+                    }
+                } catch { }
+            }
+
+            // Extraer BodyElements RAW del TemplateSnapshot como string
+            string? templateBodyElementsRaw = null;
+            try {
+                if (!string.IsNullOrEmpty(filledForm.TemplateSnapshot)) {
+                    using var snapshotDoc2 = JsonDocument.Parse(filledForm.TemplateSnapshot);
+                    if (snapshotDoc2.RootElement.TryGetProperty("BodyElements", out var bodyElProp2)) {
+                        templateBodyElementsRaw = bodyElProp2.GetString();
+                    }
+                }
+            } catch {
+                try {
+                    if (filledForm.Template != null) {
+                        templateBodyElementsRaw = filledForm.Template.BodyElements;
+                    }
+                } catch { }
+            }
+
             // Devolver datos simples y directos
+            // bodyDataRaw y templateBodyElementsRaw son strings puros que NO pasan por ReferenceHandler.Preserve
             var response = new {
                 formID = filledForm.FormID,
                 templateID = filledForm.TemplateID,
@@ -130,6 +169,9 @@ namespace FormBuilder.API.Controllers
                 templateVersion = filledForm.TemplateVersion,
                 headerData = headerDataParsed,
                 bodyData = bodyDataParsed,
+                bodyDataRaw = filledForm.BodyData ?? "",
+                templateBodyElements = templateBodyElements,
+                templateBodyElementsRaw = templateBodyElementsRaw ?? "",
                 createdAt = filledForm.CreatedAt,
                 updatedAt = filledForm.UpdatedAt
             };
@@ -368,7 +410,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 TemplateID = dto.TemplateID,
                 TemplateVersion = template.Version, // Guardar la versión específica usada
                 TemplateSnapshot = JsonSerializer.Serialize(templateSnapshot), // Guardar snapshot completo
-                FechaVersion = DateTime.UtcNow, // ✅ Fecha de versión
+                FechaVersion = DateTime.Now, // ✅ Hora local del servidor
                 
                 // ✅ AUDITORÍA: Guardar quién creó el formulario
                 FilledBy = dto.FilledBy,
@@ -380,7 +422,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 FirmasData = dto.FirmasData,
                 TipoProducto = dto.TipoProducto, // 🦐🐟 NUEVO: Guardar tipo de producto
                 Observaciones = dto.Observaciones,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.Now
             };
 
             _context.FilledForms.Add(filledForm);
@@ -419,7 +461,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             existingForm.FirmasData = dto.FirmasData;
             existingForm.TipoProducto = dto.TipoProducto; // 🦐🐟 NUEVO: Actualizar tipo de producto
             existingForm.Observaciones = dto.Observaciones;
-            existingForm.UpdatedAt = DateTime.UtcNow; // Agregar timestamp de actualización
+            existingForm.UpdatedAt = DateTime.Now; // ✅ Hora local del servidor
             // CreatedAt se mantiene sin cambios
 
             _context.Entry(existingForm).State = EntityState.Modified;
@@ -474,7 +516,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             if (!string.IsNullOrEmpty(dto.Observaciones))
                 existingForm.Observaciones = dto.Observaciones;
 
-            existingForm.UpdatedAt = DateTime.UtcNow;
+            existingForm.UpdatedAt = DateTime.Now;
 
             try
             {
@@ -1092,7 +1134,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         TargetEmail = targetEmail,
                         FormId = form.FormID,
                         FormCode = formCode,
-                        CreatedDate = DateTime.UtcNow,
+                        CreatedDate = DateTime.Now,
                         IsRead = false,
                         Status = "pending"
                     };
@@ -1224,7 +1266,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         TargetEmail = responsableEmail,
                         FormId = form.FormID,
                         FormCode = formCode,
-                        CreatedDate = DateTime.UtcNow,
+                        CreatedDate = DateTime.Now,
                         IsRead = false,
                         Status = "pending"
                     };
