@@ -31,6 +31,7 @@ namespace FormBuilder.API.Controllers
                 var rawForms = await _context.FilledForms
                     .Include(f => f.Template)
                     .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID))
+                    .Where(f => !_context.SignatureRejections.Any(r => r.FilledFormId == f.FormID))
                     .Select(f => new
                     {
                         id = f.FormID,
