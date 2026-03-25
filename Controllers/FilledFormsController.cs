@@ -550,6 +550,12 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             if (relatedSignatures.Any())
                 _context.Signatures.RemoveRange(relatedSignatures);
 
+            var relatedRejections = await _context.SignatureRejections
+                .Where(r => r.FilledFormId == id)
+                .ToListAsync();
+            if (relatedRejections.Any())
+                _context.SignatureRejections.RemoveRange(relatedRejections);
+
             var relatedAlerts = await _context.Alerts
                 .Where(a => a.FormId == id)
                 .ToListAsync();

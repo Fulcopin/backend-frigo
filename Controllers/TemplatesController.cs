@@ -270,20 +270,65 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteTemplate(int id)
         {
-            // Primero, busca la plantilla que se va a borrar.
             var template = await _context.Templates.FindAsync(id);
             if (template == null)
             {
-                // Si no existe, no se puede borrar. Devuelve 404.
                 return NotFound();
             }
 
-            // Le dice a Entity Framework que esta plantilla debe ser eliminada.
+            // Obtener IDs de formularios llenados que pertenecen a esta plantilla
+            var relatedFormIds = await _context.FilledForms
+                .Where(f => f.TemplateID == id)
+                .Select(f => f.FormID)
+                .ToListAsync();
+
+            if (relatedFormIds.Any())
+            {
+                // Eliminar alertas que apuntan a estos formularios (no tienen CASCADE)
+                var relatedAlerts = await _context.Alerts
+                    .Where(a => a.FormId != null && relatedFormIds.Contains(a.FormId.Value))
+                    .ToListAsync();
+                if (relatedAlerts.Any())
+                    _context.Alerts.RemoveRange(relatedAlerts);
+
+                // Eliminar firmas relacionadas
+                var relatedSignatures = await _context.Signatures
+                    .Where(s => relatedFormIds.Contains(s.FilledFormId))
+                    .ToListAsync();
+                if (relatedSignatures.Any())
+                    _context.Signatures.RemoveRange(relatedSignatures);
+
+                // Eliminar rechazos de firma relacionados
+                var relatedRejections = await _context.SignatureRejections
+                    .Where(r => relatedFormIds.Contains(r.FilledFormId))
+                    .ToListAsync();
+                if (relatedRejections.Any())
+                    _context.SignatureRejections.RemoveRange(relatedRejections);
+
+                // Eliminar los formularios llenados
+                var relatedForms = await _context.FilledForms
+                    .Where(f => f.TemplateID == id)
+                    .ToListAsync();
+                _context.FilledForms.RemoveRange(relatedForms);
+            }
+
+            // Eliminar borradores asociados a esta plantilla
+            var relatedDrafts = await _context.FormDrafts
+                .Where(d => d.TemplateID == id)
+                .ToListAsync();
+            if (relatedDrafts.Any())
+                _context.FormDrafts.RemoveRange(relatedDrafts);
+
+            // Eliminar versiones del template
+            var relatedVersions = await _context.TemplateVersions
+                .Where(v => v.TemplateID == id)
+                .ToListAsync();
+            if (relatedVersions.Any())
+                _context.TemplateVersions.RemoveRange(relatedVersions);
+
             _context.Templates.Remove(template);
-            // Ejecuta el comando DELETE en la base de datos.
             await _context.SaveChangesAsync();
 
-            // Devuelve "204 No Content" para indicar el éxito.
             return NoContent();
         }
 
