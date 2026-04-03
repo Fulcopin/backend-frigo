@@ -721,6 +721,8 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                     Codigo = templateToUse.Codigo,
                     Nombre = templateToUse.Nombre,
                     Version = templateToUse.Version,
+                    FechaVersion = templateToUse.FechaVersion,
+                    CreatedAt = templateToUse.CreatedAt,
                     Objetivo = templateToUse.Supervisa,
                     Proceso = templateToUse.Proceso,
                     CuandoSeUsa = templateToUse.CuandoSeUsa,
@@ -850,6 +852,8 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         Codigo = templateToUse.Codigo,
                         Nombre = templateToUse.Nombre,
                         Version = templateToUse.Version,
+                        FechaVersion = templateToUse.FechaVersion,
+                        CreatedAt = templateToUse.CreatedAt,
                         Objetivo = templateToUse.Supervisa,
                         Proceso = templateToUse.Proceso,
                         Structure = new

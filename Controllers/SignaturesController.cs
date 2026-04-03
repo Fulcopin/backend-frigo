@@ -796,21 +796,60 @@ namespace FormBuilder.API.Controllers
 
         private async Task SendSignatureNotification(FilledForm form, string signedBy)
         {
+            // 1) Emails de firmantes asignados (del FirmasData)
             var recipientEmails = ExtractFirmanteEmails(form.FirmasData);
 
-            if (recipientEmails.Count == 0)
+            // 2) Recipients globales configurados (SGI)
+            var config = await _context.Set<AlertConfiguration>().FirstOrDefaultAsync();
+            if (config != null && !string.IsNullOrEmpty(config.SignatureRecipients))
             {
-                var config = await _context.Set<AlertConfiguration>().FirstOrDefaultAsync();
-                if (config != null && !string.IsNullOrEmpty(config.SignatureRecipients))
+                try
                 {
-                    try
-                    {
-                        var parsed = JsonSerializer.Deserialize<List<string>>(config.SignatureRecipients);
-                        if (parsed != null) recipientEmails.AddRange(parsed);
-                    }
-                    catch { }
+                    var parsed = JsonSerializer.Deserialize<List<string>>(config.SignatureRecipients);
+                    if (parsed != null) recipientEmails.AddRange(parsed);
                 }
+                catch { }
             }
+
+            // 3) Emails de TODOS los usuarios del catálogo de firmas (para que todos estén informados)
+            var catalogoEmails = await _context.CatalogoFirmas
+                .Where(c => c.Activo && !string.IsNullOrEmpty(c.Correo))
+                .Select(c => c.Correo!)
+                .ToListAsync();
+            recipientEmails.AddRange(catalogoEmails);
+
+            // 4) Emails de reemplazos/suplentes del template
+            if (!string.IsNullOrEmpty(form.Template?.Firmas))
+            {
+                try
+                {
+                    var templateFirmas = JsonSerializer.Deserialize<List<FirmaAlertInfo>>(form.Template.Firmas,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (templateFirmas != null)
+                    {
+                        var catalogo = await _context.CatalogoFirmas.Where(c => c.Activo).ToListAsync();
+                        foreach (var firma in templateFirmas)
+                        {
+                            if (firma.Reemplazos == null) continue;
+                            foreach (var reemplazoNombre in firma.Reemplazos)
+                            {
+                                if (string.IsNullOrWhiteSpace(reemplazoNombre)) continue;
+                                var entry = catalogo.FirstOrDefault(c =>
+                                    (c.NombreCompleto ?? "").Equals(reemplazoNombre, StringComparison.OrdinalIgnoreCase));
+                                if (!string.IsNullOrWhiteSpace(entry?.Correo))
+                                    recipientEmails.Add(entry.Correo);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Deduplicar y filtrar vacíos
+            recipientEmails = recipientEmails
+                .Where(e => !string.IsNullOrWhiteSpace(e) && e.Contains("@"))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             if (recipientEmails.Count == 0) return;
 
@@ -879,6 +918,19 @@ namespace FormBuilder.API.Controllers
                 catch { }
             }
 
+            // Incluir TODOS los correos del catálogo de firmas
+            var catalogoEmails = await _context.CatalogoFirmas
+                .Where(c => c.Activo && !string.IsNullOrEmpty(c.Correo))
+                .Select(c => c.Correo!)
+                .ToListAsync();
+            recipientEmails.AddRange(catalogoEmails);
+
+            // Deduplicar y filtrar vacíos
+            recipientEmails = recipientEmails
+                .Where(e => !string.IsNullOrWhiteSpace(e) && e.Contains("@"))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             if (recipientEmails.Count == 0) return;
 
             var formListHtml = string.Join("", formNames.Select(n =>
@@ -937,6 +989,21 @@ namespace FormBuilder.API.Controllers
         var templateName = form.Template?.Nombre ?? "Formulario";
         var formCode = form.Template?.Codigo ?? "N/A";
 
+        // Cargar catálogo de firmas para buscar emails de reemplazos
+        var catalogo = await _context.CatalogoFirmas.Where(c => c.Activo).ToListAsync();
+
+        // Parsear las firmas del TEMPLATE para obtener reemplazos configurados por puesto
+        var templateFirmas = new List<FirmaAlertInfo>();
+        if (!string.IsNullOrEmpty(form.Template?.Firmas))
+        {
+            try
+            {
+                templateFirmas = JsonSerializer.Deserialize<List<FirmaAlertInfo>>(form.Template.Firmas,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<FirmaAlertInfo>();
+            }
+            catch { }
+        }
+
         _logger.LogInformation("📋 Procesando alertas y emails para formulario {FormId} ({FormCode}). Total puestos: {Count}", form.FormID, formCode, firmasDict.Count);
 
         foreach (var kvp in firmasDict)
@@ -970,15 +1037,6 @@ namespace FormBuilder.API.Controllers
                 targetEmail = targetName;
             }
 
-            // Si no hay email asignado, saltar este puesto
-            if (string.IsNullOrEmpty(targetEmail))
-            {
-                _logger.LogWarning("  ⚠️ Puesto {Puesto}: No se encontró email asignado, saltando", puesto);
-                continue;
-            }
-
-            _logger.LogInformation("  🔍 Puesto {Puesto}: Usuario asignado = {Name} ({Email})", puesto, targetName ?? "Sin nombre", targetEmail);
-
             // Verificar si este puesto ya tiene firma digital (imagen)
             bool yaFirmo = false;
             if (firmaData.TryGetProperty("firma", out var firmaObj) && firmaObj.ValueKind == JsonValueKind.Object)
@@ -986,58 +1044,103 @@ namespace FormBuilder.API.Controllers
                 bool tieneUrl = firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString());
                 bool tieneBase64 = firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString());
                 yaFirmo = tieneUrl || tieneBase64;
-
-                if (yaFirmo)
-                {
-                    _logger.LogInformation("  ✅ Puesto {Puesto} ({Email}): YA FIRMÓ (tiene imagen de firma)", puesto, targetEmail);
-                }
             }
 
             // Si ya firmó este puesto, NO crear alerta ni enviar email
             if (yaFirmo)
             {
+                _logger.LogInformation("  ✅ Puesto {Puesto}: YA FIRMÓ", puesto);
                 continue;
             }
 
-            _logger.LogInformation("  ⏳ Puesto {Puesto} ({Email}): Pendiente de firma", puesto, targetEmail);
+            _logger.LogInformation("  ⏳ Puesto {Puesto}: Pendiente de firma", puesto);
 
-            // Verificar si ya existe una alerta pendiente (evitar duplicados)
-            var existingAlert = await _context.Set<Alert>()
-                .FirstOrDefaultAsync(a =>
-                    a.FormId == form.FormID &&
-                    a.TargetEmail == targetEmail &&
-                    a.Type == "signature" &&
-                    a.Status == "pending");
+            // Recopilar TODOS los emails a notificar para este puesto: titular + reemplazos
+            var emailsParaPuesto = new List<(string email, string nombre, bool esSuplente)>();
 
-            if (existingAlert != null)
+            // 1) Titular
+            if (!string.IsNullOrEmpty(targetEmail))
             {
-                _logger.LogInformation("  ℹ️ Ya existe alerta pendiente para {Email} en formulario {FormId}", targetEmail, form.FormID);
+                emailsParaPuesto.Add((targetEmail, targetName ?? "Usuario", false));
+            }
+
+            // 2) Reemplazos/Suplentes: buscar en el template la config de este puesto
+            var templateFirma = templateFirmas.FirstOrDefault(f =>
+                (f.Puesto ?? "").Equals(puesto, StringComparison.OrdinalIgnoreCase));
+            if (templateFirma?.Reemplazos != null)
+            {
+                foreach (var reemplazoNombre in templateFirma.Reemplazos)
+                {
+                    if (string.IsNullOrWhiteSpace(reemplazoNombre)) continue;
+
+                    // Buscar email del reemplazo en el catálogo de firmas
+                    var entry = catalogo.FirstOrDefault(c =>
+                        (c.NombreCompleto ?? "").Equals(reemplazoNombre, StringComparison.OrdinalIgnoreCase));
+                    var reemplazoEmail = entry?.Correo;
+
+                    if (!string.IsNullOrWhiteSpace(reemplazoEmail))
+                    {
+                        emailsParaPuesto.Add((reemplazoEmail, reemplazoNombre, true));
+                        _logger.LogInformation("  👥 Suplente encontrado para {Puesto}: {Nombre} ({Email})", puesto, reemplazoNombre, reemplazoEmail);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("  ⚠️ Suplente {Nombre} para {Puesto} no tiene correo en el catálogo", reemplazoNombre, puesto);
+                    }
+                }
+            }
+
+            if (emailsParaPuesto.Count == 0)
+            {
+                _logger.LogWarning("  ⚠️ Puesto {Puesto}: No se encontró email de titular ni suplentes", puesto);
                 continue;
             }
 
-            // ✅ CREAR ALERTA EN BASE DE DATOS
-            var alert = new Alert
+            // Enviar alerta y email a cada destinatario (titular + suplentes)
+            foreach (var (email, nombre, esSuplente) in emailsParaPuesto)
             {
-                Type = "signature",
-                Priority = "high",
-                Title = $"Firma requerida: {templateName}",
-                Message = $"El formulario {formCode} ({templateName}) requiere tu firma en el puesto: {puesto}. Por favor revisa y firma el formulario lo antes posible.",
-                TargetEmail = targetEmail,
-                FormId = form.FormID,
-                FormCode = formCode,
-                CreatedDate = DateTime.Now,
-                IsRead = false,
-                Status = "pending"
-            };
+                // Verificar si ya existe una alerta pendiente (evitar duplicados)
+                var existingAlert = await _context.Set<Alert>()
+                    .FirstOrDefaultAsync(a =>
+                        a.FormId == form.FormID &&
+                        a.TargetEmail == email &&
+                        a.Type == "signature" &&
+                        a.Status == "pending");
 
-            _context.Set<Alert>().Add(alert);
-            _logger.LogInformation("  ✅ ALERTA CREADA para {Email} en puesto {Puesto}", targetEmail, puesto);
+                if (existingAlert != null)
+                {
+                    _logger.LogInformation("  ℹ️ Ya existe alerta pendiente para {Email} en formulario {FormId}", email, form.FormID);
+                    continue;
+                }
 
-            // 📧 ENVIAR EMAIL DE NOTIFICACIÓN
-            try
-            {
-                var emailSubject = $"✍️ Firma Requerida - {templateName}";
-                var emailBody = $@"
+                var rolTexto = esSuplente ? $"(Suplente de {targetName ?? puesto})" : "";
+                var alert = new Alert
+                {
+                    Type = "signature",
+                    Priority = "high",
+                    Title = $"Firma requerida: {templateName}",
+                    Message = $"El formulario {formCode} ({templateName}) requiere firma en el puesto: {puesto}. {rolTexto} Por favor revisa y firma el formulario lo antes posible.",
+                    TargetEmail = email,
+                    FormId = form.FormID,
+                    FormCode = formCode,
+                    CreatedDate = DateTime.Now,
+                    IsRead = false,
+                    Status = "pending"
+                };
+
+                _context.Set<Alert>().Add(alert);
+                _logger.LogInformation("  ✅ ALERTA CREADA para {Email} ({Nombre}) {Rol} en puesto {Puesto}", email, nombre, esSuplente ? "[SUPLENTE]" : "[TITULAR]", puesto);
+
+                // 📧 ENVIAR EMAIL DE NOTIFICACIÓN
+                try
+                {
+                    var saludoTexto = esSuplente
+                        ? $"Hola {nombre}, como suplente de <strong>{targetName ?? puesto}</strong>, se requiere tu firma:"
+                        : $"Se requiere tu firma digital en el siguiente formulario:";
+                    var emailSubject = esSuplente
+                        ? $"✍️ Firma Requerida (Suplente) - {templateName}"
+                        : $"✍️ Firma Requerida - {templateName}";
+                    var emailBody = $@"
                     <html>
                     <head>
                         <style>
@@ -1060,9 +1163,9 @@ namespace FormBuilder.API.Controllers
                                         padding: 20px; 
                                         border-radius: 10px; 
                                         margin-bottom: 20px;'>
-                                <h2 style='color: #333; margin-top: 0;'>Hola {targetName ?? "Usuario"},</h2>
+                                <h2 style='color: #333; margin-top: 0;'>Hola {nombre},</h2>
                                 <p style='color: #555; font-size: 16px; line-height: 1.6;'>
-                                    Se requiere tu firma digital en el siguiente formulario:
+                                    {saludoTexto}
                                 </p>
                                 
                                 <table style='width: 100%; 
@@ -1085,7 +1188,7 @@ namespace FormBuilder.API.Controllers
                                     <tr style='background: #f8f9fa;'>
                                         <td style='padding: 12px; 
                                                    border-bottom: 1px solid #ddd; 
-                                                   font-weight: bold;'>Tu puesto</td>
+                                                   font-weight: bold;'>Puesto</td>
                                         <td style='padding: 12px; 
                                                    border-bottom: 1px solid #ddd;'>{puesto}</td>
                                     </tr>
@@ -1131,15 +1234,13 @@ namespace FormBuilder.API.Controllers
                     </html>
                 ";
 
-                // Enviar email usando el servicio inyectado
-                await _emailService.SendAlertEmailAsync(targetEmail, emailSubject, emailBody);
-                _logger.LogInformation("  📧 EMAIL ENVIADO a {Email} ({Name})", targetEmail, targetName ?? "Sin nombre");
-            }
-            catch (Exception emailEx)
-            {
-                _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", targetEmail);
-                // No lanzar excepción para no bloquear el flujo principal
-                // El usuario aún recibirá la alerta en la aplicación
+                    await _emailService.SendAlertEmailAsync(email, emailSubject, emailBody);
+                    _logger.LogInformation("  📧 EMAIL ENVIADO a {Email} ({Name}) {Rol}", email, nombre, esSuplente ? "[SUPLENTE]" : "[TITULAR]");
+                }
+                catch (Exception emailEx)
+                {
+                    _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", email);
+                }
             }
         }
 
@@ -1149,7 +1250,6 @@ namespace FormBuilder.API.Controllers
     catch (Exception ex)
     {
         _logger.LogError(ex, "❌ Error al crear alertas y enviar emails para formulario {FormId}", form.FormID);
-        // No lanzar excepción para no bloquear el flujo principal de firma
     }
 }
 
