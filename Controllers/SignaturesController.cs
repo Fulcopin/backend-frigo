@@ -45,7 +45,10 @@ namespace FormBuilder.API.Controllers
                     })
                     .ToListAsync();
 
-                var pendingForms = rawForms.Select(f => new
+                // Excluir formularios donde TODAS las firmas ya están completadas en FirmasData
+                var pendingForms = rawForms
+                    .Where(f => !AllFirmasCompleted(f.firmasData))
+                    .Select(f => new
                 {
                     f.id,
                     f.templateId,
@@ -264,11 +267,17 @@ namespace FormBuilder.API.Controllers
                 var todayLocal = DateTime.Today;
                 var todayUtc = DateTime.Now.Date;
 
+                // Obtener formularios sin firma en tabla Signatures y verificar si FirmasData tiene firmas completas
+                var formsWithoutSignature = await _context.FilledForms
+                    .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID))
+                    .Select(f => f.FirmasData)
+                    .ToListAsync();
+
+                var pendingCount = formsWithoutSignature.Count(fd => !AllFirmasCompleted(fd));
+
                 var stats = new SignatureStatsResponse
                 {
-                    PendingCount = await _context.FilledForms
-                        .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID))
-                        .CountAsync(),
+                    PendingCount = pendingCount,
 
                     SignedToday = await _context.Signatures
                         .Where(s => s.SignedDate.Date == todayLocal || s.SignedDate.Date == todayUtc)
@@ -725,6 +734,47 @@ namespace FormBuilder.API.Controllers
             }
         }
 
+        /// <summary>
+        /// Verifica si TODAS las firmas en FirmasData ya están completadas (tienen imagen firma.url o firma.base64).
+        /// Si FirmasData está vacío o no se puede parsear, retorna false.
+        /// </summary>
+        private static bool AllFirmasCompleted(string? firmasData)
+        {
+            if (string.IsNullOrEmpty(firmasData)) return false;
+
+            try
+            {
+                var firmas = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(firmasData);
+                if (firmas == null || firmas.Count == 0) return false;
+
+                foreach (var kvp in firmas)
+                {
+                    var value = kvp.Value;
+                    if (value.ValueKind != JsonValueKind.Object) return false;
+
+                    // Verificar si tiene un objeto "firma" con "url" o "base64"
+                    if (!value.TryGetProperty("firma", out var firmaObj) || firmaObj.ValueKind != JsonValueKind.Object)
+                        return false;
+
+                    bool hasUrl = firmaObj.TryGetProperty("url", out var urlProp) &&
+                                  urlProp.ValueKind == JsonValueKind.String &&
+                                  !string.IsNullOrWhiteSpace(urlProp.GetString());
+
+                    bool hasBase64 = firmaObj.TryGetProperty("base64", out var b64Prop) &&
+                                     b64Prop.ValueKind == JsonValueKind.String &&
+                                     !string.IsNullOrWhiteSpace(b64Prop.GetString());
+
+                    if (!hasUrl && !hasBase64) return false;
+                }
+
+                return true; // Todas las firmas tienen imagen
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static string ExtractCreatedBy(string? headerData, string? firmasData)
         {
             if (!string.IsNullOrEmpty(headerData))
@@ -796,60 +846,21 @@ namespace FormBuilder.API.Controllers
 
         private async Task SendSignatureNotification(FilledForm form, string signedBy)
         {
-            // 1) Emails de firmantes asignados (del FirmasData)
             var recipientEmails = ExtractFirmanteEmails(form.FirmasData);
 
-            // 2) Recipients globales configurados (SGI)
-            var config = await _context.Set<AlertConfiguration>().FirstOrDefaultAsync();
-            if (config != null && !string.IsNullOrEmpty(config.SignatureRecipients))
+            if (recipientEmails.Count == 0)
             {
-                try
+                var config = await _context.Set<AlertConfiguration>().FirstOrDefaultAsync();
+                if (config != null && !string.IsNullOrEmpty(config.SignatureRecipients))
                 {
-                    var parsed = JsonSerializer.Deserialize<List<string>>(config.SignatureRecipients);
-                    if (parsed != null) recipientEmails.AddRange(parsed);
-                }
-                catch { }
-            }
-
-            // 3) Emails de TODOS los usuarios del catálogo de firmas (para que todos estén informados)
-            var catalogoEmails = await _context.CatalogoFirmas
-                .Where(c => c.Activo && !string.IsNullOrEmpty(c.Correo))
-                .Select(c => c.Correo!)
-                .ToListAsync();
-            recipientEmails.AddRange(catalogoEmails);
-
-            // 4) Emails de reemplazos/suplentes del template
-            if (!string.IsNullOrEmpty(form.Template?.Firmas))
-            {
-                try
-                {
-                    var templateFirmas = JsonSerializer.Deserialize<List<FirmaAlertInfo>>(form.Template.Firmas,
-                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                    if (templateFirmas != null)
+                    try
                     {
-                        var catalogo = await _context.CatalogoFirmas.Where(c => c.Activo).ToListAsync();
-                        foreach (var firma in templateFirmas)
-                        {
-                            if (firma.Reemplazos == null) continue;
-                            foreach (var reemplazoNombre in firma.Reemplazos)
-                            {
-                                if (string.IsNullOrWhiteSpace(reemplazoNombre)) continue;
-                                var entry = catalogo.FirstOrDefault(c =>
-                                    (c.NombreCompleto ?? "").Equals(reemplazoNombre, StringComparison.OrdinalIgnoreCase));
-                                if (!string.IsNullOrWhiteSpace(entry?.Correo))
-                                    recipientEmails.Add(entry.Correo);
-                            }
-                        }
+                        var parsed = JsonSerializer.Deserialize<List<string>>(config.SignatureRecipients);
+                        if (parsed != null) recipientEmails.AddRange(parsed);
                     }
+                    catch { }
                 }
-                catch { }
             }
-
-            // Deduplicar y filtrar vacíos
-            recipientEmails = recipientEmails
-                .Where(e => !string.IsNullOrWhiteSpace(e) && e.Contains("@"))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
 
             if (recipientEmails.Count == 0) return;
 
@@ -917,19 +928,6 @@ namespace FormBuilder.API.Controllers
                 }
                 catch { }
             }
-
-            // Incluir TODOS los correos del catálogo de firmas
-            var catalogoEmails = await _context.CatalogoFirmas
-                .Where(c => c.Activo && !string.IsNullOrEmpty(c.Correo))
-                .Select(c => c.Correo!)
-                .ToListAsync();
-            recipientEmails.AddRange(catalogoEmails);
-
-            // Deduplicar y filtrar vacíos
-            recipientEmails = recipientEmails
-                .Where(e => !string.IsNullOrWhiteSpace(e) && e.Contains("@"))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
 
             if (recipientEmails.Count == 0) return;
 

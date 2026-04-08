@@ -121,6 +121,45 @@ namespace FormBuilder.API.Services
             }
         }
 
+        /// <summary>
+        /// Verifica si TODAS las firmas en FirmasData ya están completadas (tienen imagen firma.url o firma.base64).
+        /// </summary>
+        private static bool AllFirmasCompleted(string? firmasData)
+        {
+            if (string.IsNullOrEmpty(firmasData)) return false;
+
+            try
+            {
+                var firmas = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(firmasData);
+                if (firmas == null || firmas.Count == 0) return false;
+
+                foreach (var kvp in firmas)
+                {
+                    var value = kvp.Value;
+                    if (value.ValueKind != JsonValueKind.Object) return false;
+
+                    if (!value.TryGetProperty("firma", out var firmaObj) || firmaObj.ValueKind != JsonValueKind.Object)
+                        return false;
+
+                    bool hasUrl = firmaObj.TryGetProperty("url", out var urlProp) &&
+                                  urlProp.ValueKind == JsonValueKind.String &&
+                                  !string.IsNullOrWhiteSpace(urlProp.GetString());
+
+                    bool hasBase64 = firmaObj.TryGetProperty("base64", out var b64Prop) &&
+                                     b64Prop.ValueKind == JsonValueKind.String &&
+                                     !string.IsNullOrWhiteSpace(b64Prop.GetString());
+
+                    if (!hasUrl && !hasBase64) return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private async Task CheckPendingSignaturesAsync(ApplicationDbContext context, IEmailService emailService)
         {
             try
@@ -129,11 +168,16 @@ namespace FormBuilder.API.Services
                 if (config == null || !config.EnableSignatureAlerts) return;
 
                 var threshold = DateTime.Now.AddHours(-config.SignatureAlertDelay);
-                var pendingForms = await context.FilledForms
+                var candidateForms = await context.FilledForms
                     .Include(f => f.Template)
                     .Where(f => f.CreatedAt < threshold &&
                                !context.Signatures.Any(s => s.FilledFormId == f.FormID))
                     .ToListAsync();
+
+                // Filtrar: excluir formularios donde TODAS las firmas ya están completadas en FirmasData
+                var pendingForms = candidateForms
+                    .Where(f => !AllFirmasCompleted(f.FirmasData))
+                    .ToList();
 
                 // Precargar catálogo de firmas para buscar emails
                 var catalogo = await context.CatalogoFirmas.ToListAsync();
