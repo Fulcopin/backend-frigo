@@ -393,6 +393,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 Codigo = template.Codigo,
                 Nombre = template.Nombre,
                 Version = template.Version,
+                FechaVersion = template.FechaVersion,
                 Objetivo = template.Supervisa,
                 Proceso = template.Proceso,
                 CuandoSeUsa = template.CuandoSeUsa,
@@ -641,6 +642,12 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             if (templateToUse == null)
             {
                 return NotFound(new { message = "Template no encontrado" });
+            }
+            
+            // Si el snapshot no tenía FechaVersion, usar la del template actual
+            if (templateToUse.FechaVersion == null && filledForm.Template?.FechaVersion != null)
+            {
+                templateToUse.FechaVersion = filledForm.Template.FechaVersion;
             }
 
             // Parsear datos JSON del formulario

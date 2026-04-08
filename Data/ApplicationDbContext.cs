@@ -23,6 +23,7 @@ namespace FormBuilder.API.Data
         public DbSet<CatalogoFirma> CatalogoFirmas { get; set; } // ✅ NUEVO: Catálogo de firmas
         public DbSet<FormDraft> FormDrafts { get; set; } // ✅ NUEVO: Borradores de formularios
         public DbSet<SignatureRejection> SignatureRejections { get; set; } // ✅ NUEVO: Rechazos de firma con motivo
+        public DbSet<TemplateChangeLog> TemplateChangeLogs { get; set; } // ✅ NUEVO: Historial manual de cambios
         
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }

@@ -1127,6 +1127,57 @@ private List<FieldChangeDto> CompareSignatures(string? json1, string? json2)
 
 // Clase interna para procesar el JSON de firmas
 public class FirmaItem { public string puesto { get; set; } = ""; }
+
+        // ========== HISTORIAL MANUAL DE CAMBIOS ==========
+
+        /// GET: api/Templates/5/changelog
+        [HttpGet("{id}/changelog")]
+        public async Task<ActionResult> GetChangelog(int id)
+        {
+            var entries = await _context.TemplateChangeLogs
+                .Where(c => c.TemplateID == id)
+                .OrderByDescending(c => c.Fecha)
+                .Select(c => new { c.Id, c.Fecha, c.Version, c.CambioRealizado })
+                .ToListAsync();
+            return Ok(entries);
+        }
+
+        /// POST: api/Templates/5/changelog
+        [HttpPost("{id}/changelog")]
+        public async Task<ActionResult> AddChangelogEntry(int id, [FromBody] ChangelogEntryDto dto)
+        {
+            var template = await _context.Templates.FindAsync(id);
+            if (template == null) return NotFound();
+
+            var entry = new TemplateChangeLog
+            {
+                TemplateID = id,
+                Fecha = dto.Fecha,
+                Version = dto.Version ?? template.Version ?? "1",
+                CambioRealizado = dto.CambioRealizado
+            };
+            _context.TemplateChangeLogs.Add(entry);
+            await _context.SaveChangesAsync();
+            return Ok(new { entry.Id, entry.Fecha, entry.Version, entry.CambioRealizado });
+        }
+
+        /// DELETE: api/Templates/changelog/7
+        [HttpDelete("changelog/{entryId}")]
+        public async Task<ActionResult> DeleteChangelogEntry(int entryId)
+        {
+            var entry = await _context.TemplateChangeLogs.FindAsync(entryId);
+            if (entry == null) return NotFound();
+            _context.TemplateChangeLogs.Remove(entry);
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "Registro eliminado" });
+        }
+    }
+
+    public class ChangelogEntryDto
+    {
+        public DateTime Fecha { get; set; }
+        public string? Version { get; set; }
+        public string CambioRealizado { get; set; } = string.Empty;
     }
 }
 
