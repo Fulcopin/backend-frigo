@@ -681,9 +681,16 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             
             try
             {
-                headerFields = string.IsNullOrEmpty(templateToUse.HeaderFields) 
+                // Para headerFields usar SIEMPRE el template actual (tiene los defaultValues actualizados)
+                // Para bodyElements usar el snapshot (tiene la estructura correcta del momento del llenado)
+                var currentTemplate = filledForm.Template;
+                var headerFieldsSource = (!string.IsNullOrEmpty(currentTemplate?.HeaderFields))
+                    ? currentTemplate.HeaderFields
+                    : templateToUse.HeaderFields;
+
+                headerFields = string.IsNullOrEmpty(headerFieldsSource) 
                     ? new object[] { } 
-                    : JsonSerializer.Deserialize<object>(templateToUse.HeaderFields);
+                    : JsonSerializer.Deserialize<object>(headerFieldsSource);
                     
                 bodyElements = string.IsNullOrEmpty(templateToUse.BodyElements) 
                     ? new object[] { } 
@@ -705,6 +712,7 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 FormID = filledForm.FormID,
                 TemplateID = filledForm.TemplateID,
                 TemplateVersion = filledForm.TemplateVersion,
+                FechaVersion = filledForm.FechaVersion,
                 CreatedAt = filledForm.CreatedAt,
                 UpdatedAt = filledForm.UpdatedAt,
                 Observaciones = filledForm.Observaciones,
@@ -823,9 +831,15 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 {
                     try
                     {
-                        headerFields = string.IsNullOrEmpty(templateToUse.HeaderFields) 
+                        // Para headerFields usar SIEMPRE el template actual (tiene los defaultValues actualizados)
+                        // Para bodyElements usar el snapshot (tiene la estructura correcta del momento del llenado)
+                        var headerFieldsSource = (!string.IsNullOrEmpty(filledForm.Template?.HeaderFields))
+                            ? filledForm.Template.HeaderFields
+                            : templateToUse.HeaderFields;
+
+                        headerFields = string.IsNullOrEmpty(headerFieldsSource) 
                             ? new object[] { } 
-                            : JsonSerializer.Deserialize<object>(templateToUse.HeaderFields);
+                            : JsonSerializer.Deserialize<object>(headerFieldsSource);
                             
                         bodyElements = string.IsNullOrEmpty(templateToUse.BodyElements) 
                             ? new object[] { } 
