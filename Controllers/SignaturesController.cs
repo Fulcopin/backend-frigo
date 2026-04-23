@@ -104,7 +104,7 @@ namespace FormBuilder.API.Controllers
                 _context.Signatures.Add(signature);
 
                 // CLAVE: Actualizar FirmasData del formulario con la firma realizada
-                UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate);
+                UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre);
 
                 // Guardar firma y cambios al formulario ANTES de crear alertas
                 await _context.SaveChangesAsync();
@@ -185,7 +185,7 @@ namespace FormBuilder.API.Controllers
                         _context.Signatures.Add(signature);
 
                         // CLAVE: Actualizar FirmasData del formulario
-                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate);
+                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre);
                             await CreateSignatureAlertsForPendingSigners(form, request.SignedBy);
                             
                         signedFormNames.Add(form.Template?.Nombre ?? $"Formulario #{formId}");
@@ -589,7 +589,7 @@ namespace FormBuilder.API.Controllers
         /// o si todos ya tienen firma, agrega la firma al primer puesto encontrado.
         /// Esto hace que la firma aparezca en ViewForms, PDF y Excel.
         /// </summary>
-        private void UpdateFirmasDataWithSignature(FilledForm form, string signatureImage, string signedBy, DateTime signedDate)
+        private void UpdateFirmasDataWithSignature(FilledForm form, string signatureImage, string signedBy, DateTime signedDate, string? signerNombre = null)
         {
             try
             {
@@ -602,19 +602,31 @@ namespace FormBuilder.API.Controllers
                 }
 
                 // Buscar el puesto que corresponde al firmante (por email o nombre)
+                // IMPORTANTE: saltar los puestos que ya tienen firma
                 string targetPuesto = null;
+                bool foundByEmailMatch = false;
 
                 foreach (var kvp in firmasDict)
                 {
                     // Verificar si este puesto tiene email que coincide con signedBy
                     if (kvp.Value.ValueKind == JsonValueKind.Object)
                     {
+                        // ✅ SKIP: si ya tiene firma, no volver a firmar este slot
+                        bool yaFirmado = false;
+                        if (kvp.Value.TryGetProperty("firma", out var firmaCheck) && firmaCheck.ValueKind == JsonValueKind.Object)
+                        {
+                            if (firmaCheck.TryGetProperty("url", out var uChk) && !string.IsNullOrEmpty(uChk.GetString())) yaFirmado = true;
+                            else if (firmaCheck.TryGetProperty("base64", out var bChk) && !string.IsNullOrEmpty(bChk.GetString())) yaFirmado = true;
+                        }
+                        if (yaFirmado) continue;
+
                         if (kvp.Value.TryGetProperty("email", out var emailProp))
                         {
                             var email = emailProp.GetString();
                             if (!string.IsNullOrEmpty(email) && email.Equals(signedBy, StringComparison.OrdinalIgnoreCase))
                             {
                                 targetPuesto = kvp.Key;
+                                foundByEmailMatch = true;
                                 break;
                             }
                         }
@@ -625,9 +637,62 @@ namespace FormBuilder.API.Controllers
                             if (!string.IsNullOrEmpty(nombre) && nombre.Equals(signedBy, StringComparison.OrdinalIgnoreCase))
                             {
                                 targetPuesto = kvp.Key;
+                                foundByEmailMatch = true;
                                 break;
                             }
                         }
+                    }
+                }
+
+                // Si no encontramos por email/nombre, intentar usando reemplazos del template
+                // para encontrar el slot correcto del firmante suplente
+                if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre))
+                {
+                    var templateFirmasJson = form.Template?.Firmas;
+                    if (!string.IsNullOrEmpty(templateFirmasJson))
+                    {
+                        try
+                        {
+                            var tfList = JsonSerializer.Deserialize<List<JsonElement>>(templateFirmasJson);
+                            if (tfList != null)
+                            {
+                                foreach (var tf in tfList)
+                                {
+                                    string tfPuesto = tf.TryGetProperty("puesto", out var pProp) ? pProp.GetString() ?? "" : "";
+                                    if (string.IsNullOrEmpty(tfPuesto)) continue;
+
+                                    // Comprobar si el signer es reemplazo para este puesto
+                                    bool esReemplazoEnPuesto = false;
+                                    if (tf.TryGetProperty("reemplazos", out var rArr) && rArr.ValueKind == JsonValueKind.Array)
+                                    {
+                                        foreach (var rEl in rArr.EnumerateArray())
+                                        {
+                                            var rName = rEl.GetString() ?? "";
+                                            if (rName.Equals(signerNombre, StringComparison.OrdinalIgnoreCase))
+                                            { esReemplazoEnPuesto = true; break; }
+                                        }
+                                    }
+                                    if (!esReemplazoEnPuesto) continue;
+
+                                    // Verificar que el slot correspondiente no esté ya firmado
+                                    if (firmasDict.TryGetValue(tfPuesto, out var slotEl) && slotEl.ValueKind == JsonValueKind.Object)
+                                    {
+                                        bool yaFirmadoSlot = false;
+                                        if (slotEl.TryGetProperty("firma", out var fChk) && fChk.ValueKind == JsonValueKind.Object)
+                                        {
+                                            if (fChk.TryGetProperty("url", out var u2) && !string.IsNullOrEmpty(u2.GetString())) yaFirmadoSlot = true;
+                                            else if (fChk.TryGetProperty("base64", out var b2) && !string.IsNullOrEmpty(b2.GetString())) yaFirmadoSlot = true;
+                                        }
+                                        if (!yaFirmadoSlot)
+                                        {
+                                            targetPuesto = tfPuesto;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* si falla el parse, continuamos al fallback */ }
                     }
                 }
 
@@ -689,10 +754,23 @@ namespace FormBuilder.API.Controllers
                         existingFecha = f.GetString()!;
                 }
 
+                // Determinar el nombre a mostrar:
+                // - Si el email coincidio (es el encargado titular), usar el nombre existente del template
+                // - Si NO coincidio (es suplente), usar el nombre real del firmante (signerNombre)
+                string nombreMostrado = existingNombre;
+                bool esSuplente = false;
+                string nombreEncargadoOriginal = existingNombre;
+
+                if (!foundByEmailMatch && !string.IsNullOrEmpty(signerNombre))
+                {
+                    nombreMostrado = signerNombre;
+                    esSuplente = true;
+                }
+
                 // Crear el nuevo objeto con la firma incluida
                 var updatedPuesto = new Dictionary<string, object>
                 {
-                    ["nombre"] = existingNombre,
+                    ["nombre"] = nombreMostrado,
                     ["email"] = existingEmail,
                     ["fecha"] = existingFecha,
                     ["hora"] = existingHora,
@@ -703,6 +781,13 @@ namespace FormBuilder.API.Controllers
                         ["url"] = "",
                         ["provider"] = "signature-management"
                     }
+                };
+
+                // Si es suplente, registrar datos de reemplazo
+                if (esSuplente)
+                {
+                    updatedPuesto["esReemplazo"] = true;
+                    updatedPuesto["reemplazandoA"] = nombreEncargadoOriginal;
                 };
 
                 // Reconstruir todo el firmasData

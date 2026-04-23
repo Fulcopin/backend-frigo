@@ -192,6 +192,20 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
             ChangeDescription = "Actualización de estructura/datos detectada"
         };
         _context.TemplateVersions.Add(historyEntry);
+
+        // ✅ AUTO-CHANGELOG: Si cambió la versión, crear entrada automática en el historial manual
+        bool versionCambio = (oldTemplate.Version ?? "") != (template.Version ?? "");
+        if (versionCambio)
+        {
+            var autoEntry = new TemplateChangeLog
+            {
+                TemplateID = id,
+                Fecha = DateTime.Now,
+                Version = template.Version ?? "1",
+                CambioRealizado = $"Versión actualizada de {oldTemplate.Version ?? "N/A"} a {template.Version ?? "N/A"} — {template.Nombre}"
+            };
+            _context.TemplateChangeLogs.Add(autoEntry);
+        }
     }
 
     template.UpdatedAt = DateTime.Now;
@@ -1129,6 +1143,40 @@ private List<FieldChangeDto> CompareSignatures(string? json1, string? json2)
 public class FirmaItem { public string puesto { get; set; } = ""; }
 
         // ========== HISTORIAL MANUAL DE CAMBIOS ==========
+
+        /// POST: api/Templates/changelog/import-from-versions
+        /// Importa entradas del historial desde TemplateVersions para plantillas sin registros manuales
+        [HttpPost("changelog/import-from-versions")]
+        public async Task<ActionResult> ImportChangelogFromVersions()
+        {
+            // Obtener todas las plantillas que NO tienen ninguna entrada en TemplateChangeLogs
+            var templateIdsConChangelog = await _context.TemplateChangeLogs
+                .Select(c => c.TemplateID)
+                .Distinct()
+                .ToListAsync();
+
+            var versionesAImportar = await _context.TemplateVersions
+                .Where(v => !templateIdsConChangelog.Contains(v.TemplateID))
+                .OrderBy(v => v.TemplateID)
+                .ThenBy(v => v.CreatedAt)
+                .ToListAsync();
+
+            if (!versionesAImportar.Any())
+                return Ok(new { importados = 0, message = "No hay versiones nuevas para importar." });
+
+            var nuevasEntradas = versionesAImportar.Select(v => new TemplateChangeLog
+            {
+                TemplateID = v.TemplateID,
+                Fecha = v.CreatedAt,
+                Version = v.Version ?? "1",
+                CambioRealizado = $"[Auto] {v.ChangeDescription ?? "Modificación de estructura"}"
+            }).ToList();
+
+            _context.TemplateChangeLogs.AddRange(nuevasEntradas);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { importados = nuevasEntradas.Count, message = $"Se importaron {nuevasEntradas.Count} registros del historial de versiones." });
+        }
 
         /// GET: api/Templates/5/changelog
         [HttpGet("{id}/changelog")]

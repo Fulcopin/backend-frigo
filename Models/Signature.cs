@@ -47,6 +47,7 @@ namespace FormBuilder.API.Models
         public string SignedBy { get; set; } = string.Empty;
         public DateTime SignedDate { get; set; }
         public string? Comments { get; set; }
+        public string? SignerNombre { get; set; }
     }
     
     public class SignMultipleFormsRequest
@@ -56,6 +57,7 @@ namespace FormBuilder.API.Models
         public string SignedBy { get; set; } = string.Empty;
         public DateTime SignedDate { get; set; }
         public string? Comments { get; set; }
+        public string? SignerNombre { get; set; }
     }
     
     public class RejectFormRequest
