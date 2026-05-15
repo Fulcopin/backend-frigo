@@ -81,6 +81,7 @@ ScaffoldingReadMe.txt
 
 # Others
 *.cache
+FormBuilder.API.csproj.lscache
 *.publishsettings
 orleans.codegen.cs
 
