@@ -183,7 +183,8 @@ namespace FormBuilder.API.Controllers
 public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
     [FromQuery] DateTime? inicio, 
     [FromQuery] DateTime? fin,
-    [FromQuery] int? templateId)
+    [FromQuery] int? templateId,
+    [FromQuery] string? lote)
 {
     try 
     {
@@ -203,6 +204,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
         if (templateId.HasValue && templateId.Value > 0)
         {
             query = query.Where(f => f.TemplateID == templateId.Value);
+        }
+        if (!string.IsNullOrEmpty(lote))
+        {
+            query = query.Where(f => f.HeaderData.Contains(lote) || f.BodyData.Contains(lote));
         }
 
         // 3. Ejecutar
@@ -429,6 +434,9 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             _context.FilledForms.Add(filledForm);
             await _context.SaveChangesAsync();
             
+            // ✅ INDEXAR PARA TRAZABILIDAD RÁPIDA
+            await IndexTraceabilityRecords(filledForm, template);
+
             _logger.LogInformation("✅ Formulario {FormId} creado por {User} ({Email})", 
                 filledForm.FormID, filledForm.FilledBy ?? "Desconocido", filledForm.FilledByEmail ?? "Sin email");
 
@@ -470,6 +478,12 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             try
             {
                 await _context.SaveChangesAsync();
+                
+                // ✅ RE-INDEXAR PARA TRAZABILIDAD RÁPIDA
+                var template = await _context.Templates.FindAsync(dto.TemplateID);
+                if (template != null) {
+                    await IndexTraceabilityRecords(existingForm, template);
+                }
                 
                 return Ok(new { 
                     message = "Formulario actualizado exitosamente", 
@@ -522,6 +536,12 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             try
             {
                 await _context.SaveChangesAsync();
+                
+                // ✅ RE-INDEXAR PARA TRAZABILIDAD RÁPIDA
+                var template = await _context.Templates.FindAsync(existingForm.TemplateID);
+                if (template != null) {
+                    await IndexTraceabilityRecords(existingForm, template);
+                }
                 
                 return Ok(new { 
                     message = "Autoguardado exitoso", 
@@ -1335,6 +1355,104 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 _logger.LogError(ex, "❌ Error al crear alertas iniciales para formulario {FormId}", form.FormID);
                 // No lanzar excepción para no bloquear la creación del formulario
             }
+        }
+        
+        private async Task IndexTraceabilityRecords(FilledForm filledForm, Template template)
+        {
+            // Clear existing records for this form if any (for Put/Patch)
+            var existingRecords = await _context.LotesTrazabilidad.Where(x => x.FormID == filledForm.FormID).ToListAsync();
+            if (existingRecords.Any())
+            {
+                _context.LotesTrazabilidad.RemoveRange(existingRecords);
+            }
+
+            var lotesEncontrados = new HashSet<string>();
+            string? producto = filledForm.TipoProducto;
+            string? subproducto = null;
+
+            if (!string.IsNullOrEmpty(filledForm.HeaderData))
+            {
+                try
+                {
+                    var headerDict = JsonSerializer.Deserialize<Dictionary<string, object>>(filledForm.HeaderData);
+                    if (headerDict != null)
+                    {
+                        foreach (var kvp in headerDict)
+                        {
+                            if (kvp.Key.Contains("lote", StringComparison.OrdinalIgnoreCase) && kvp.Value != null)
+                            {
+                                var val = kvp.Value.ToString()?.Trim();
+                                if (!string.IsNullOrEmpty(val)) lotesEncontrados.Add(val);
+                            }
+                            else if (kvp.Key.Contains("producto", StringComparison.OrdinalIgnoreCase) && 
+                                     !kvp.Key.Contains("subproducto", StringComparison.OrdinalIgnoreCase) && 
+                                     kvp.Value != null && producto == null)
+                            {
+                                producto = kvp.Value.ToString()?.Trim();
+                            }
+                            else if (kvp.Key.Contains("subproducto", StringComparison.OrdinalIgnoreCase) && kvp.Value != null)
+                            {
+                                subproducto = kvp.Value.ToString()?.Trim();
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Search in BodyData
+            if (!string.IsNullOrEmpty(filledForm.BodyData))
+            {
+                try
+                {
+                    var bodyData = JsonSerializer.Deserialize<List<JsonElement>>(filledForm.BodyData);
+                    if (bodyData != null)
+                    {
+                        foreach (var element in bodyData)
+                        {
+                            if (element.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "table")
+                            {
+                                if (element.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var row in dataProp.EnumerateArray())
+                                    {
+                                        if (row.ValueKind == JsonValueKind.Object)
+                                        {
+                                            foreach (var prop in row.EnumerateObject())
+                                            {
+                                                if (prop.Name.Contains("lote", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    var val = prop.Value.ToString()?.Trim();
+                                                    if (!string.IsNullOrEmpty(val))
+                                                        lotesEncontrados.Add(val);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Guardar en la tabla LotesTrazabilidad
+            foreach (var lote in lotesEncontrados)
+            {
+                _context.LotesTrazabilidad.Add(new LoteTrazabilidad
+                {
+                    FormID = filledForm.FormID,
+                    LoteOrigen = lote,
+                    Proceso = template.Proceso ?? "Desconocido",
+                    Producto = producto,
+                    CantidadEntrada = 0,
+                    CantidadSalida = 0,
+                    FechaRegistro = filledForm.CreatedAt
+                });
+            }
+
+            await _context.SaveChangesAsync();
         }
     }
 

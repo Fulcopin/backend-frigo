@@ -25,6 +25,12 @@ namespace FormBuilder.API.Data
         public DbSet<SignatureRejection> SignatureRejections { get; set; } // ✅ NUEVO: Rechazos de firma con motivo
         public DbSet<TemplateChangeLog> TemplateChangeLogs { get; set; } // ✅ NUEVO: Historial manual de cambios
         
+        // NUEVO: Tabla para indexar lotes y acelerar la trazabilidad
+        public DbSet<LoteTrazabilidad> LotesTrazabilidad { get; set; }
+
+        // INVENTARIO DE LOTES: Tabla completa para seguimiento de lotes por proceso
+        public DbSet<LoteInventario> LotesInventario { get; set; }
+
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }
 
