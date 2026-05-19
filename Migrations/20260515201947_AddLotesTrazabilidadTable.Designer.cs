@@ -4,6 +4,7 @@ using FormBuilder.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace FormBuilder.API.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260515201947_AddLotesTrazabilidadTable")]
+    partial class AddLotesTrazabilidadTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -285,79 +288,6 @@ namespace FormBuilder.API.Migrations
                     b.HasKey("DraftID");
 
                     b.ToTable("FormDrafts");
-                });
-
-            modelBuilder.Entity("FormBuilder.API.Models.LoteInventario", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("ActualizadoEn")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Clasificacion")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("CreadoEn")
-                        .HasColumnType("datetime2");
-
-                    b.Property<decimal>("Desperdicio")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<string>("Estado")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<DateTime?>("Fecha")
-                        .HasColumnType("date");
-
-                    b.Property<int?>("FormId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("LotePadre")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<string>("Notas")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<string>("NumeroLote")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<decimal>("PesoEntrada")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<decimal>("PesoNeto")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<string>("Proceso")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("Producto")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("TemplateId")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("TipoDesperdicio")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("LotesInventario");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.LoteTrazabilidad", b =>
