@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
 
@@ -311,6 +312,257 @@ namespace FormBuilder.API.Controllers
             _context.LotesInventario.Remove(lote);
             await _context.SaveChangesAsync();
             return NoContent();
+        }
+
+        // ── POST /api/LotesInventario/sincronizar-desde-formularios ──────────
+        /// <summary>
+        /// Escanea todos los FilledForms guardados en la BD, extrae los números de lote
+        /// que aparecen en HeaderData y en BodyData (tablas), y los registra en LotesInventario
+        /// si todavía no existen (evita duplicados). Devuelve un resumen del proceso.
+        /// </summary>
+        [HttpPost("sincronizar-desde-formularios")]
+        public async Task<ActionResult<object>> SincronizarDesdeFormularios()
+        {
+            var ahora = DateTime.UtcNow;
+
+            // Cargar formularios junto con su template (nombre, proceso)
+            var forms = await _context.FilledForms
+                .Include(f => f.Template)
+                .AsNoTracking()
+                .Select(f => new
+                {
+                    f.FormID,
+                    f.TemplateID,
+                    TemplateNombre = f.Template != null ? f.Template.Nombre : "",
+                    TemplateProceso = f.Template != null ? f.Template.Proceso : "",
+                    f.HeaderData,
+                    f.BodyData,
+                    f.TipoProducto,
+                    f.CreatedAt
+                })
+                .ToListAsync();
+
+            // Lotes ya existentes en inventario (para omitirlos)
+            var existentes = await _context.LotesInventario
+                .Select(l => l.NumeroLote)
+                .ToHashSetAsync();
+
+            // Mapa: numeroLote → info contextual para crear el registro
+            var lotesDetectados = new Dictionary<string, LoteDetectadoInfo>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var form in forms)
+            {
+                var proceso = form.TemplateProceso ?? form.TemplateNombre ?? "Sin proceso";
+                var fechaForm = form.CreatedAt.Date;
+
+                // ── Escanear HeaderData ──────────────────────────────────────
+                if (!string.IsNullOrWhiteSpace(form.HeaderData))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(form.HeaderData);
+                        foreach (var prop in doc.RootElement.EnumerateObject())
+                        {
+                            if (!prop.Name.Contains("lote", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            var val = prop.Value.ValueKind == JsonValueKind.String
+                                ? prop.Value.GetString()?.Trim()
+                                : prop.Value.ToString()?.Trim();
+
+                            if (string.IsNullOrWhiteSpace(val)) continue;
+
+                            // Puede ser un array de entradas (lote_entrante)
+                            if (prop.Value.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var entry in prop.Value.EnumerateArray())
+                                {
+                                    if (entry.ValueKind == JsonValueKind.Object)
+                                    {
+                                        foreach (var ep in entry.EnumerateObject())
+                                        {
+                                            if (ep.Name.Contains("lote", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                var lv = ep.Value.ToString()?.Trim();
+                                                if (!string.IsNullOrWhiteSpace(lv))
+                                                    RegistrarDetectado(lotesDetectados, lv, proceso, form.TipoProducto, fechaForm, form.FormID, form.TemplateID);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                RegistrarDetectado(lotesDetectados, val, proceso, form.TipoProducto, fechaForm, form.FormID, form.TemplateID);
+                            }
+                        }
+                    }
+                    catch { /* JSON inválido → ignorar */ }
+                }
+
+                // ── Escanear BodyData (tablas) ───────────────────────────────
+                if (!string.IsNullOrWhiteSpace(form.BodyData))
+                {
+                    try
+                    {
+                        using var doc2 = JsonDocument.Parse(form.BodyData);
+                        if (doc2.RootElement.ValueKind != JsonValueKind.Array) continue;
+
+                        foreach (var element in doc2.RootElement.EnumerateArray())
+                        {
+                            // Elementos con data (tablas, lotes por fila, etc.)
+                            JsonElement dataArr = default;
+                            bool hasData = element.TryGetProperty("data", out dataArr)
+                                          && dataArr.ValueKind == JsonValueKind.Array;
+                            if (!hasData) continue;
+
+                            foreach (var row in dataArr.EnumerateArray())
+                            {
+                                if (row.ValueKind != JsonValueKind.Object) continue;
+
+                                string? productoFila = null;
+                                string? clasificacionFila = null;
+                                var lotesFila = new List<string>();
+
+                                foreach (var prop in row.EnumerateObject())
+                                {
+                                    var keyUp = prop.Name.ToUpperInvariant();
+                                    var valStr = prop.Value.ValueKind == JsonValueKind.String
+                                        ? prop.Value.GetString()?.Trim()
+                                        : prop.Value.ToString()?.Trim();
+
+                                    if (string.IsNullOrWhiteSpace(valStr)) continue;
+
+                                    if (keyUp.Contains("LOTE"))
+                                        lotesFila.Add(valStr);
+                                    else if (keyUp.Contains("PRODUCTO") && productoFila == null)
+                                        productoFila = valStr;
+                                    else if (keyUp.Contains("CLASIF") && clasificacionFila == null)
+                                        clasificacionFila = valStr;
+                                }
+
+                                foreach (var lv in lotesFila)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(lv))
+                                    {
+                                        RegistrarDetectado(lotesDetectados, lv, proceso,
+                                            productoFila ?? form.TipoProducto,
+                                            fechaForm, form.FormID, form.TemplateID,
+                                            clasificacionFila);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { /* JSON inválido → ignorar */ }
+                }
+            }
+
+            // ── Filtrar los ya existentes y crear los nuevos ─────────────────
+            var nuevos = new List<LoteInventario>();
+            var yaExistentes = 0;
+
+            foreach (var kvp in lotesDetectados)
+            {
+                if (existentes.Contains(kvp.Key))
+                {
+                    yaExistentes++;
+                    continue;
+                }
+
+                var info = kvp.Value;
+                nuevos.Add(new LoteInventario
+                {
+                    NumeroLote = kvp.Key,
+                    Proceso    = info.Proceso ?? "Sin proceso",
+                    Producto   = info.Producto,
+                    Clasificacion = info.Clasificacion,
+                    PesoEntrada = 0,
+                    Desperdicio = 0,
+                    PesoNeto    = 0,
+                    Estado      = "disponible",
+                    FormId      = info.FormId,
+                    TemplateId  = info.TemplateId.ToString(),
+                    Fecha       = info.Fecha ?? ahora.Date,
+                    Notas       = "Importado automáticamente desde formularios",
+                    CreadoEn    = ahora,
+                    ActualizadoEn = ahora
+                });
+
+                // Agregar al set para evitar crear duplicados dentro del mismo batch
+                existentes.Add(kvp.Key);
+            }
+
+            if (nuevos.Count > 0)
+            {
+                _context.LotesInventario.AddRange(nuevos);
+                await _context.SaveChangesAsync();
+            }
+
+            return Ok(new
+            {
+                totalFormulariosEscaneados = forms.Count,
+                lotesDetectadosEnJson      = lotesDetectados.Count,
+                lotesNuevosRegistrados     = nuevos.Count,
+                lotesYaExistentes          = yaExistentes,
+                lotes = nuevos.Select(l => new
+                {
+                    l.NumeroLote,
+                    l.Proceso,
+                    l.Producto,
+                    l.Clasificacion,
+                    l.Fecha,
+                    l.FormId
+                })
+            });
+        }
+
+        // ── Helper interno: registrar o enriquecer un lote detectado ──────────
+        private static void RegistrarDetectado(
+            Dictionary<string, LoteDetectadoInfo> dict,
+            string numeroLote,
+            string? proceso,
+            string? producto,
+            DateTime? fecha,
+            int formId,
+            int templateId,
+            string? clasificacion = null)
+        {
+            // Rechazar valores que claramente no son números de lote
+            if (numeroLote.Length < 2 || numeroLote.Length > 100) return;
+
+            if (!dict.ContainsKey(numeroLote))
+            {
+                dict[numeroLote] = new LoteDetectadoInfo
+                {
+                    Proceso       = proceso,
+                    Producto      = producto,
+                    Clasificacion = clasificacion,
+                    Fecha         = fecha,
+                    FormId        = formId,
+                    TemplateId    = templateId
+                };
+            }
+            else
+            {
+                // Enriquecer con datos adicionales si llegan después
+                var info = dict[numeroLote];
+                if (string.IsNullOrWhiteSpace(info.Producto) && !string.IsNullOrWhiteSpace(producto))
+                    info.Producto = producto;
+                if (string.IsNullOrWhiteSpace(info.Clasificacion) && !string.IsNullOrWhiteSpace(clasificacion))
+                    info.Clasificacion = clasificacion;
+            }
+        }
+
+        // ── Clase auxiliar (interna al controller) ────────────────────────────
+        private class LoteDetectadoInfo
+        {
+            public string? Proceso       { get; set; }
+            public string? Producto      { get; set; }
+            public string? Clasificacion { get; set; }
+            public DateTime? Fecha       { get; set; }
+            public int FormId            { get; set; }
+            public int TemplateId        { get; set; }
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
