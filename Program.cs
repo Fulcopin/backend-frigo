@@ -1,3 +1,5 @@
+
+
 using FormBuilder.API.Data;
 using FormBuilder.API.Services;
 using Microsoft.EntityFrameworkCore;
@@ -6,7 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 var MyAllowSpecificOrigins = "_myAllowSpecificOrigins";
 
-builder.Services.AddCors(options =>
+/*builder.Services.AddCors(options =>
 {
     options.AddPolicy(name: MyAllowSpecificOrigins,
         policy =>
@@ -22,6 +24,19 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod()
             .AllowCredentials(); // ✅ AGREGADO: permite envío de token Bearer
         });
+});*/
+
+// Configuración CORS - permitir cualquier origen
+builder.Services.AddCors(options =>
+{
+   options.AddPolicy(name: MyAllowSpecificOrigins,
+                     policy =>
+                     {
+                        // Permitir cualquier origen
+                        policy.AllowAnyOrigin()
+                               .AllowAnyHeader()
+                               .AllowAnyMethod();
+                     });
 });
 
 // DbContext
@@ -62,3 +77,5 @@ app.UseAuthorization();                  // 4️⃣ Autorización
 app.MapControllers();                    // 5️⃣ Controladores al final
 
 app.Run();
+
+

@@ -1381,18 +1381,53 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         {
                             if (kvp.Key.Contains("lote", StringComparison.OrdinalIgnoreCase) && kvp.Value != null)
                             {
-                                var val = kvp.Value.ToString()?.Trim();
-                                if (!string.IsNullOrEmpty(val)) lotesEncontrados.Add(val);
+                                // Si el valor es un JsonElement (puede ser array lote_entrante o string simple)
+                                if (kvp.Value is JsonElement je)
+                                {
+                                    if (je.ValueKind == JsonValueKind.Array)
+                                    {
+                                        // lote_entrante: array de objetos con campo "lote"
+                                        foreach (var entry in je.EnumerateArray())
+                                        {
+                                            if (entry.ValueKind != JsonValueKind.Object) continue;
+                                            foreach (var prop in entry.EnumerateObject())
+                                            {
+                                                if (prop.Name.Contains("lote", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    var lv = prop.Value.GetString()?.Trim();
+                                                    if (!string.IsNullOrEmpty(lv) && lv.Length <= 100)
+                                                        lotesEncontrados.Add(lv);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else if (je.ValueKind == JsonValueKind.String)
+                                    {
+                                        var lv = je.GetString()?.Trim();
+                                        if (!string.IsNullOrEmpty(lv) && lv.Length <= 100)
+                                            lotesEncontrados.Add(lv);
+                                    }
+                                }
+                                else
+                                {
+                                    var val = kvp.Value.ToString()?.Trim();
+                                    if (!string.IsNullOrEmpty(val) && val.Length <= 100)
+                                        lotesEncontrados.Add(val);
+                                }
                             }
                             else if (kvp.Key.Contains("producto", StringComparison.OrdinalIgnoreCase) && 
                                      !kvp.Key.Contains("subproducto", StringComparison.OrdinalIgnoreCase) && 
                                      kvp.Value != null && producto == null)
                             {
-                                producto = kvp.Value.ToString()?.Trim();
+                                producto = kvp.Value is JsonElement jeProd && jeProd.ValueKind == JsonValueKind.String
+                                    ? jeProd.GetString()?.Trim()
+                                    : kvp.Value.ToString()?.Trim();
                             }
                             else if (kvp.Key.Contains("subproducto", StringComparison.OrdinalIgnoreCase) && kvp.Value != null)
                             {
-                                subproducto = kvp.Value.ToString()?.Trim();
+                                subproducto = kvp.Value is JsonElement jeSub && jeSub.ValueKind == JsonValueKind.String
+                                    ? jeSub.GetString()?.Trim()
+                                    : kvp.Value.ToString()?.Trim();
                             }
                         }
                     }
