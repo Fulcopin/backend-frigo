@@ -1,4 +1,4 @@
-﻿using FormBuilder.API.Data;
+using FormBuilder.API.Data;
 using FormBuilder.API.Models;
 using FormBuilder.API.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -988,12 +988,12 @@ namespace FormBuilder.API.Controllers
             {
                 try
                 {
-                    await _emailService.SendAlertEmailAsync(email, subject, body);
-                    _logger.LogInformation("Notificacion de firma enviada a {Email} para formulario {FormId}", email, form.FormID);
+                    // Notificación por correo inmediato omitida para evitar spam (gestionada en resumen diario a las 7:30am)
+                    _logger.LogInformation("Notificacion de firma registrada para {Email} (Email inmediato omitido)", email);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error al enviar notificacion a {Email}", email);
+                    _logger.LogWarning(ex, "Error al registrar notificacion a {Email}", email);
                 }
             }
         }
@@ -1040,11 +1040,12 @@ namespace FormBuilder.API.Controllers
             {
                 try
                 {
-                    await _emailService.SendAlertEmailAsync(email, subject, body);
+                    // Notificación por correo inmediato omitida para evitar spam (gestionada en resumen diario a las 7:30am)
+                    _logger.LogInformation("Notificacion de firma masiva registrada para {Email} (Email inmediato omitido)", email);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error al enviar notificacion masiva a {Email}", email);
+                    _logger.LogWarning(ex, "Error al registrar notificacion masiva a {Email}", email);
                 }
             }
         }
@@ -1317,12 +1318,12 @@ namespace FormBuilder.API.Controllers
                     </html>
                 ";
 
-                    await _emailService.SendAlertEmailAsync(email, emailSubject, emailBody);
-                    _logger.LogInformation("  📧 EMAIL ENVIADO a {Email} ({Name}) {Rol}", email, nombre, esSuplente ? "[SUPLENTE]" : "[TITULAR]");
+                    // Alerta por correo inmediato omitida para evitar spam (gestionada en resumen diario a las 7:30am)
+                    _logger.LogInformation("  📧 Alerta de firma registrada en base de datos para {Email} ({Name}) {Rol} (Email inmediato omitido)", email, nombre, esSuplente ? "[SUPLENTE]" : "[TITULAR]");
                 }
                 catch (Exception emailEx)
                 {
-                    _logger.LogError(emailEx, "  ❌ Error al enviar email a {Email}", email);
+                    _logger.LogError(emailEx, "  ❌ Error al registrar alerta para {Email}", email);
                 }
             }
         }
