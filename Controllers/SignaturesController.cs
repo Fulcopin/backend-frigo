@@ -4,6 +4,7 @@ using FormBuilder.API.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace FormBuilder.API.Controllers
 {
@@ -58,7 +59,8 @@ namespace FormBuilder.API.Controllers
                     f.createdDate,
                     f.area,
                     isSigned = false,
-                    f.firmasData
+                    f.firmasData,
+                    unlocked36h = !string.IsNullOrEmpty(f.headerData) && f.headerData.Contains("unlocked36h")
                 }).ToList();
 
                 return Ok(pendingForms);
@@ -84,6 +86,14 @@ namespace FormBuilder.API.Controllers
                     return NotFound(new { message = "Formulario no encontrado" });
                 }
 
+                // 🔒 BLOQUEO A LAS 36 HORAS: Debe ser habilitado en Supervisión General antes de poder firmarse
+                var diffHours = (DateTime.Now - form.CreatedAt).TotalHours;
+                bool isUnlocked36h = !string.IsNullOrEmpty(form.HeaderData) && form.HeaderData.Contains("unlocked36h");
+                if (diffHours > 36 && !isUnlocked36h)
+                {
+                    return BadRequest(new { message = "🔒 El registro superó el límite de 36 horas desde su creación y está bloqueado. Un Administrador debe habilitarlo en Supervisión General antes de poder firmar." });
+                }
+
                 var existingSignature = await _context.Signatures
                     .FirstOrDefaultAsync(s => s.FilledFormId == formId);
 
@@ -104,7 +114,7 @@ namespace FormBuilder.API.Controllers
                 _context.Signatures.Add(signature);
 
                 // CLAVE: Actualizar FirmasData del formulario con la firma realizada
-                UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre);
+                UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre, request.TargetPuesto);
 
                 // Guardar firma y cambios al formulario ANTES de crear alertas
                 await _context.SaveChangesAsync();
@@ -164,6 +174,15 @@ namespace FormBuilder.API.Controllers
                             continue;
                         }
 
+                        // 🔒 BLOQUEO A LAS 36 HORAS PARA FIRMA MASIVA
+                        var diffHoursMulti = (DateTime.Now - form.CreatedAt).TotalHours;
+                        bool isUnlockedMulti = !string.IsNullOrEmpty(form.HeaderData) && form.HeaderData.Contains("unlocked36h");
+                        if (diffHoursMulti > 36 && !isUnlockedMulti)
+                        {
+                            failedCount++;
+                            continue;
+                        }
+
                         var existingSignature = await _context.Signatures
                             .FirstOrDefaultAsync(s => s.FilledFormId == formId);
 
@@ -185,7 +204,7 @@ namespace FormBuilder.API.Controllers
                         _context.Signatures.Add(signature);
 
                         // CLAVE: Actualizar FirmasData del formulario
-                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre);
+                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre, request.TargetPuesto);
                             await CreateSignatureAlertsForPendingSigners(form, request.SignedBy);
                             
                         signedFormNames.Add(form.Template?.Nombre ?? $"Formulario #{formId}");
@@ -403,6 +422,47 @@ namespace FormBuilder.API.Controllers
             }
         }
 
+        // POST /api/Signatures/unlock-multiple
+        [HttpPost("unlock-multiple")]
+        public async Task<ActionResult> UnlockMultipleForms([FromBody] UnlockMultipleFormsRequest request)
+        {
+            try
+            {
+                int unlockedCount = 0;
+                foreach (var formId in request.FormIds)
+                {
+                    var form = await _context.FilledForms.FindAsync(formId);
+                    if (form == null) continue;
+
+                    JsonObject jsonObj = new JsonObject();
+                    if (!string.IsNullOrEmpty(form.HeaderData))
+                    {
+                        try { jsonObj = JsonNode.Parse(form.HeaderData) as JsonObject ?? new JsonObject(); } catch {}
+                    }
+
+                    jsonObj["unlocked36h"] = true;
+                    jsonObj["unlockedBy"] = request.UnlockedBy;
+                    jsonObj["unlockedAt"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                    form.HeaderData = jsonObj.ToJsonString();
+                    form.UpdatedAt = DateTime.Now;
+                    unlockedCount++;
+                }
+
+                if (unlockedCount > 0)
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new { success = true, message = $"{unlockedCount} formularios habilitados exitosamente para firma.", unlockedCount });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al habilitar formularios");
+                return StatusCode(500, new { message = "Error al habilitar formularios" });
+            }
+        }
+
         // GET /api/Signatures/timing-report
         /// <summary>
         /// Reporte de tiempos de firma: muestra cuánto se demoran en firmar y motivos de rechazo
@@ -589,7 +649,7 @@ namespace FormBuilder.API.Controllers
         /// o si todos ya tienen firma, agrega la firma al primer puesto encontrado.
         /// Esto hace que la firma aparezca en ViewForms, PDF y Excel.
         /// </summary>
-        private void UpdateFirmasDataWithSignature(FilledForm form, string signatureImage, string signedBy, DateTime signedDate, string? signerNombre = null)
+        private void UpdateFirmasDataWithSignature(FilledForm form, string signatureImage, string signedBy, DateTime signedDate, string? signerNombre = null, string? targetPuestoParam = null)
         {
             try
             {
@@ -601,10 +661,24 @@ namespace FormBuilder.API.Controllers
                         ?? new Dictionary<string, JsonElement>();
                 }
 
-                // Buscar el puesto que corresponde al firmante (por email o nombre)
-                // IMPORTANTE: saltar los puestos que ya tienen firma
                 string targetPuesto = null;
                 bool foundByEmailMatch = false;
+
+                // 🎯 PRIORIDAD 0: Si el frontend especificó exactamente qué puesto firmar (TargetPuesto)
+                if (!string.IsNullOrEmpty(targetPuestoParam) && firmasDict.ContainsKey(targetPuestoParam))
+                {
+                    var slotVal = firmasDict[targetPuestoParam];
+                    bool yaFirmadoSlotParam = false;
+                    if (slotVal.ValueKind == JsonValueKind.Object && slotVal.TryGetProperty("firma", out var fChkP) && fChkP.ValueKind == JsonValueKind.Object)
+                    {
+                        if (fChkP.TryGetProperty("url", out var uP) && !string.IsNullOrEmpty(uP.GetString())) yaFirmadoSlotParam = true;
+                        else if (fChkP.TryGetProperty("base64", out var bP) && !string.IsNullOrEmpty(bP.GetString())) yaFirmadoSlotParam = true;
+                    }
+                    if (!yaFirmadoSlotParam)
+                    {
+                        targetPuesto = targetPuestoParam;
+                    }
+                }
 
                 foreach (var kvp in firmasDict)
                 {

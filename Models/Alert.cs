@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace FormBuilder.API.Models
 {
@@ -37,6 +37,7 @@ namespace FormBuilder.API.Models
         public bool EnableSignatureAlerts { get; set; } = true;
         public int SignatureAlertDelay { get; set; } = 24;
         public string SignatureRecipients { get; set; } = "[]";
+        public int SummaryFrequencyDays { get; set; } = 7;
         public string SenderEmail { get; set; } = "alertas@frigolab.com";
         public string SenderName { get; set; } = "Frigolab Alertas";
     }

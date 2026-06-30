@@ -48,6 +48,7 @@ namespace FormBuilder.API.Models
         public DateTime SignedDate { get; set; }
         public string? Comments { get; set; }
         public string? SignerNombre { get; set; }
+        public string? TargetPuesto { get; set; }
     }
     
     public class SignMultipleFormsRequest
@@ -58,6 +59,7 @@ namespace FormBuilder.API.Models
         public DateTime SignedDate { get; set; }
         public string? Comments { get; set; }
         public string? SignerNombre { get; set; }
+        public string? TargetPuesto { get; set; }
     }
     
     public class RejectFormRequest
@@ -66,6 +68,12 @@ namespace FormBuilder.API.Models
         public string RejectedBy { get; set; } = string.Empty;
         public string Reason { get; set; } = string.Empty;
         public DateTime RejectedDate { get; set; }
+    }
+    
+    public class UnlockMultipleFormsRequest
+    {
+        public List<int> FormIds { get; set; } = new();
+        public string UnlockedBy { get; set; } = string.Empty;
     }
     
     public class UpdateSignatureDateRequest

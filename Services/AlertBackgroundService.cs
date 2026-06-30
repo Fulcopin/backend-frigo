@@ -57,7 +57,7 @@ namespace FormBuilder.API.Services
             }
         }
 
-        private List<string> ParseRecipients(string? recipientsJson)
+        private static List<string> ParseRecipients(string? recipientsJson)
         {
             var list = new List<string>();
             if (string.IsNullOrEmpty(recipientsJson)) return list;
@@ -384,9 +384,9 @@ namespace FormBuilder.API.Services
             public List<string> Jefes { get; set; } = new();
         }
 
-        private async Task SendDailyConsolidatedAlertsAsync(ApplicationDbContext context, IEmailService emailService)
+        public static async Task SendDailyConsolidatedAlertsAsync(ApplicationDbContext context, IEmailService emailService, ILogger? logger = null)
         {
-            _logger.LogInformation("Iniciando envío de alertas consolidadas diarias a las 7:30 AM");
+            logger?.LogInformation("Iniciando envío de alertas consolidadas diarias a las 7:30 AM / Manual");
 
             try
             {
@@ -672,7 +672,7 @@ namespace FormBuilder.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error en SendDailyConsolidatedAlertsAsync");
+                logger?.LogError(ex, "Error en SendDailyConsolidatedAlertsAsync");
             }
         }
 
@@ -713,7 +713,7 @@ namespace FormBuilder.API.Services
             return $"<span style='background-color:{bg}; color:{color}; padding: 4px 10px; border-radius: 9999px; font-weight: bold; font-size: 11px; white-space: nowrap;'>{timeStr}</span>";
         }
 
-        private string BuildConsolidatedEmailHtml(
+        private static string BuildConsolidatedEmailHtml(
             CatalogoFirma user, 
             int realizadasEllosCount, 
             List<PendingSlotDescriptor> pendientesEllos, 

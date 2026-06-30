@@ -90,6 +90,7 @@ namespace FormBuilder.API.Controllers
                     existingConfig.EnableSignatureAlerts = config.EnableSignatureAlerts;
                     existingConfig.SignatureAlertDelay = config.SignatureAlertDelay;
                     existingConfig.SignatureRecipients = config.SignatureRecipients;
+                    existingConfig.SummaryFrequencyDays = config.SummaryFrequencyDays;
                     existingConfig.SenderEmail = config.SenderEmail;
                     existingConfig.SenderName = config.SenderName;
                 }
@@ -169,6 +170,26 @@ namespace FormBuilder.API.Controllers
             {
                 _logger.LogError(ex, "Error al enviar email de prueba");
                 return StatusCode(500, new { message = "Error al enviar email de prueba" });
+            }
+        }
+
+        // POST /api/Alerts/trigger-summary
+        [HttpPost("trigger-summary")]
+        public async Task<ActionResult> TriggerConsolidatedSummary()
+        {
+            try
+            {
+                await AlertBackgroundService.SendDailyConsolidatedAlertsAsync(_context, _emailService, _logger);
+                return Ok(new
+                {
+                    success = true,
+                    message = "Resumen consolidado de firmas pendientes y formularios faltantes enviado exitosamente a todos los usuarios y jefes de área."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al disparar resumen consolidado");
+                return StatusCode(500, new { message = "Error al disparar resumen consolidado" });
             }
         }
 
