@@ -194,6 +194,100 @@ namespace FormBuilder.API.Controllers
             return Ok(firma);
         }
 
+        // POST: api/CatalogoFirmas/set-pin — El usuario configura/actualiza su PIN personal (autoservicio)
+        [HttpPost("set-pin")]
+        public async Task<ActionResult> SetPin([FromBody] SetPinRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Pin) || request.Pin.Trim().Length < 4)
+            {
+                return BadRequest(new { message = "El PIN debe tener al menos 4 dígitos" });
+            }
+
+            // Buscar registro existente por correo, luego por nombre (mismo upsert que guardar-firma)
+            CatalogoFirma? firma = null;
+
+            if (!string.IsNullOrEmpty(request.Correo))
+            {
+                firma = await _context.CatalogoFirmas
+                    .Where(f => f.Activo && f.Correo != null && f.Correo.ToLower() == request.Correo.ToLower())
+                    .FirstOrDefaultAsync();
+            }
+
+            if (firma == null && !string.IsNullOrEmpty(request.NombreCompleto))
+            {
+                firma = await _context.CatalogoFirmas
+                    .Where(f => f.Activo && f.NombreCompleto != null && f.NombreCompleto.ToLower() == request.NombreCompleto.ToLower())
+                    .FirstOrDefaultAsync();
+            }
+
+            if (firma != null)
+            {
+                firma.PinHash = HashPin(request.Pin.Trim());
+                if (!string.IsNullOrEmpty(request.NombreCompleto)) firma.NombreCompleto = request.NombreCompleto;
+                if (!string.IsNullOrEmpty(request.Correo)) firma.Correo = request.Correo;
+            }
+            else
+            {
+                firma = new CatalogoFirma
+                {
+                    Puesto = "Sin asignar",
+                    NombreCompleto = request.NombreCompleto,
+                    Correo = request.Correo,
+                    Activo = true,
+                    FechaCreacion = DateTime.Now,
+                    PinHash = HashPin(request.Pin.Trim())
+                };
+                _context.CatalogoFirmas.Add(firma);
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "PIN guardado correctamente" });
+        }
+
+        // POST: api/CatalogoFirmas/verify-pin — Verifica el PIN de una persona y devuelve su firma guardada
+        [HttpPost("verify-pin")]
+        public async Task<ActionResult> VerifyPin([FromBody] VerifyPinRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Nombre) || string.IsNullOrWhiteSpace(request.Pin))
+            {
+                return BadRequest(new { message = "Nombre y PIN son requeridos" });
+            }
+
+            var firma = await _context.CatalogoFirmas
+                .Where(f => f.Activo && f.NombreCompleto != null && f.NombreCompleto.ToLower() == request.Nombre.Trim().ToLower())
+                .FirstOrDefaultAsync();
+
+            if (firma == null)
+            {
+                return NotFound(new { message = "No se encontró un registro de firma para esta persona" });
+            }
+
+            if (string.IsNullOrEmpty(firma.PinHash))
+            {
+                return BadRequest(new { message = "Esta persona no tiene un PIN configurado. Debe configurarlo en 'Mi Firma'." });
+            }
+
+            if (firma.PinHash != HashPin(request.Pin.Trim()))
+            {
+                return Unauthorized(new { message = "PIN incorrecto" });
+            }
+
+            if (string.IsNullOrEmpty(firma.FirmaImageUrl))
+            {
+                return BadRequest(new { message = "Esta persona no tiene una firma guardada. Debe subirla en 'Mi Firma'." });
+            }
+
+            return Ok(new { nombreCompleto = firma.NombreCompleto, firmaImageUrl = firma.FirmaImageUrl });
+        }
+
+        // Hash SHA-256 (hex) del PIN. El PIN nunca se guarda ni se devuelve en texto plano.
+        private static string HashPin(string pin)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(pin));
+            return Convert.ToHexString(bytes);
+        }
+
         private bool CatalogoFirmaExists(int id)
         {
             return _context.CatalogoFirmas.Any(e => e.CatalogoFirmaID == id);
@@ -207,5 +301,20 @@ namespace FormBuilder.API.Controllers
         public string? NombreCompleto { get; set; }
         public string? Correo { get; set; }
         public string FirmaImageUrl { get; set; } = string.Empty;
+    }
+
+    // DTO para configurar el PIN personal
+    public class SetPinRequest
+    {
+        public string? NombreCompleto { get; set; }
+        public string? Correo { get; set; }
+        public string Pin { get; set; } = string.Empty;
+    }
+
+    // DTO para verificar el PIN de una persona
+    public class VerifyPinRequest
+    {
+        public string Nombre { get; set; } = string.Empty;
+        public string Pin { get; set; } = string.Empty;
     }
 }

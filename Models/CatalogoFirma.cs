@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace FormBuilder.API.Models
 {
@@ -30,5 +31,13 @@ namespace FormBuilder.API.Models
         public bool Activo { get; set; } = true;
 
         public DateTime FechaCreacion { get; set; } = DateTime.Now;
+
+        /// <summary>
+        /// PIN personal (hasheado SHA-256) para firmar desde la pantalla del operador.
+        /// [JsonIgnore] garantiza que NUNCA se serialice en las respuestas de la API.
+        /// </summary>
+        [StringLength(200)]
+        [JsonIgnore]
+        public string? PinHash { get; set; }
     }
 }
