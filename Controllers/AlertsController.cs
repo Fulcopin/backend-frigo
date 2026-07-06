@@ -91,6 +91,8 @@ namespace FormBuilder.API.Controllers
                     existingConfig.SignatureAlertDelay = config.SignatureAlertDelay;
                     existingConfig.SignatureRecipients = config.SignatureRecipients;
                     existingConfig.SummaryFrequencyDays = config.SummaryFrequencyDays;
+                    existingConfig.EnableTemplateChangeAlerts = config.EnableTemplateChangeAlerts;
+                    existingConfig.TemplateChangeRecipients = config.TemplateChangeRecipients;
                     existingConfig.SenderEmail = config.SenderEmail;
                     existingConfig.SenderName = config.SenderName;
                 }

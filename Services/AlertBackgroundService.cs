@@ -39,6 +39,7 @@ namespace FormBuilder.API.Services
                             // 1. Run database alert generation
                             await CheckMissingFormsAsync(context, emailService);
                             await CheckPendingSignaturesAsync(context, emailService);
+                            await CheckTemplateChangesAsync(context, emailService);
 
                             // 2. Send consolidated emails
                             await SendDailyConsolidatedAlertsAsync(context, emailService);
@@ -129,6 +130,68 @@ namespace FormBuilder.API.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error en CheckMissingFormsAsync");
+            }
+        }
+
+        /// <summary>
+        /// Envía UN correo resumen diario con los cambios de plantillas registrados en TemplateChangeLogs
+        /// en las últimas 24h. A propósito NO se envía un correo por cada guardado — eso se desactivó antes
+        /// porque saturaba las bandejas de entrada al hacer cambios seguidos en producción.
+        /// </summary>
+        private async Task CheckTemplateChangesAsync(ApplicationDbContext context, IEmailService emailService)
+        {
+            try
+            {
+                var config = await context.AlertConfigurations.FirstOrDefaultAsync();
+                if (config == null || !config.EnableTemplateChangeAlerts) return;
+
+                var recipients = ParseRecipients(config.TemplateChangeRecipients);
+                if (recipients.Count == 0) return;
+
+                var since = DateTime.Now.AddHours(-24);
+                var recentChanges = await context.TemplateChangeLogs
+                    .Include(c => c.Template)
+                    .Where(c => c.Fecha >= since)
+                    .OrderBy(c => c.Fecha)
+                    .ToListAsync();
+
+                if (recentChanges.Count == 0) return;
+
+                var rowsHtml = string.Join("", recentChanges.Select(c =>
+                    $"<tr>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{c.Fecha:dd/MM/yyyy HH:mm}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(c.Template?.Codigo ?? c.TemplateID.ToString())}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(c.Template?.Nombre ?? "")}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(c.Version)}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(c.CambioRealizado)}</td>" +
+                    $"</tr>"));
+
+                var body = $@"
+                    <h2>📋 Resumen diario de cambios en plantillas</h2>
+                    <p>Se registraron {recentChanges.Count} cambio(s) de plantilla en las últimas 24 horas:</p>
+                    <table style='border-collapse:collapse;width:100%;font-family:sans-serif;font-size:13px;'>
+                        <thead>
+                            <tr style='background:#f1f5f9;text-align:left;'>
+                                <th style='padding:6px 10px;'>Fecha</th>
+                                <th style='padding:6px 10px;'>Código</th>
+                                <th style='padding:6px 10px;'>Plantilla</th>
+                                <th style='padding:6px 10px;'>Versión</th>
+                                <th style='padding:6px 10px;'>Cambio</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rowsHtml}</tbody>
+                    </table>";
+
+                foreach (var recipientEmail in recipients)
+                {
+                    await emailService.SendAlertEmailAsync(recipientEmail, "Resumen diario: cambios en plantillas", body);
+                }
+
+                _logger.LogInformation("CheckTemplateChangesAsync: enviado resumen de {Count} cambios a {Recipients} destinatario(s)", recentChanges.Count, recipients.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en CheckTemplateChangesAsync");
             }
         }
 

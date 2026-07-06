@@ -1,3 +1,4 @@
+
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
 using FormBuilder.API.Services;
@@ -31,7 +32,6 @@ namespace FormBuilder.API.Controllers
             {
                 var rawForms = await _context.FilledForms
                     .Include(f => f.Template)
-                    .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID))
                     .Where(f => !_context.SignatureRejections.Any(r => r.FilledFormId == f.FormID))
                     .Select(f => new
                     {
@@ -641,6 +641,669 @@ namespace FormBuilder.API.Controllers
             }
         }
 
+        // POST /api/Signatures/audit-move-signatures-massive
+        [HttpPost("audit-move-signatures-massive")]
+        public async Task<ActionResult> MoveSignaturesMassive([FromBody] MoveSignaturesRequest request)
+        {
+            try
+            {
+                var query = _context.FilledForms.Include(f => f.Template).AsQueryable();
+                if (request.FormId.HasValue && request.FormId.Value > 0)
+                    query = query.Where(f => f.FormID == request.FormId.Value);
+                if (request.TemplateId.HasValue && request.TemplateId.Value > 0)
+                    query = query.Where(f => f.TemplateID == request.TemplateId.Value);
+
+                var forms = await query.ToListAsync();
+                int modifiedCount = 0;
+
+                foreach (var form in forms)
+                {
+                    if (string.IsNullOrEmpty(form.FirmasData)) continue;
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.FirmasData);
+                    if (dict == null) continue;
+
+                    string foundFromSlot = null;
+                    if (!string.IsNullOrEmpty(request.FromPuesto) && dict.ContainsKey(request.FromPuesto))
+                    {
+                        foundFromSlot = request.FromPuesto;
+                    }
+                    else if (string.IsNullOrEmpty(request.FromPuesto) && !string.IsNullOrEmpty(request.SignerNameOrEmail))
+                    {
+                        foreach (var kvp in dict)
+                        {
+                            if (kvp.Value.ValueKind == JsonValueKind.Object)
+                            {
+                                string n = kvp.Value.TryGetProperty("nombre", out var np) ? np.GetString() ?? "" : "";
+                                string e = kvp.Value.TryGetProperty("email", out var ep) ? ep.GetString() ?? "" : "";
+                                if (n.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase) || e.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    bool hasFirma = false;
+                                    if (kvp.Value.TryGetProperty("firma", out var fObj) && fObj.ValueKind == JsonValueKind.Object)
+                                    {
+                                        if (fObj.TryGetProperty("url", out var u) && !string.IsNullOrEmpty(u.GetString())) hasFirma = true;
+                                        else if (fObj.TryGetProperty("base64", out var b) && !string.IsNullOrEmpty(b.GetString())) hasFirma = true;
+                                    }
+                                    if (hasFirma && !kvp.Key.Equals(request.ToPuesto, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        foundFromSlot = kvp.Key;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (foundFromSlot == null || !dict.ContainsKey(request.ToPuesto)) continue;
+
+                    var fromSlotEl = dict[foundFromSlot];
+                    string base64 = "";
+                    string url = "";
+                    string fecha = "";
+                    string hora = "";
+                    string nombre = "";
+                    string email = "";
+
+                    if (fromSlotEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (fromSlotEl.TryGetProperty("nombre", out var np)) nombre = np.GetString() ?? "";
+                        if (fromSlotEl.TryGetProperty("email", out var ep)) email = ep.GetString() ?? "";
+                        if (fromSlotEl.TryGetProperty("fecha", out var fp)) fecha = fp.GetString() ?? "";
+                        if (fromSlotEl.TryGetProperty("hora", out var hp)) hora = hp.GetString() ?? "";
+
+                        if (!string.IsNullOrEmpty(request.SignerNameOrEmail) &&
+                            !nombre.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase) &&
+                            !email.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (fromSlotEl.TryGetProperty("firma", out var fObj) && fObj.ValueKind == JsonValueKind.Object)
+                        {
+                            if (fObj.TryGetProperty("base64", out var bp)) base64 = bp.GetString() ?? "";
+                            if (fObj.TryGetProperty("url", out var up)) url = up.GetString() ?? "";
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(base64) && string.IsNullOrEmpty(url)) continue;
+
+                    var newDict = new Dictionary<string, object>();
+                    foreach (var kvp in dict)
+                    {
+                        if (kvp.Key.Equals(request.ToPuesto, StringComparison.OrdinalIgnoreCase))
+                        {
+                            newDict[kvp.Key] = new Dictionary<string, object>
+                            {
+                                ["nombre"] = !string.IsNullOrEmpty(request.NewSignerName) ? request.NewSignerName : nombre,
+                                ["email"] = email,
+                                ["fecha"] = fecha,
+                                ["hora"] = hora,
+                                ["fechaHoraCapturada"] = true,
+                                ["esReemplazo"] = false,
+                                ["firma"] = new Dictionary<string, string>
+                                {
+                                    ["base64"] = base64,
+                                    ["url"] = url,
+                                    ["provider"] = "signature-management"
+                                }
+                            };
+                        }
+                        else if (kvp.Key.Equals(foundFromSlot, StringComparison.OrdinalIgnoreCase))
+                        {
+                            string origNombre = "";
+                            if (form.Template != null && !string.IsNullOrEmpty(form.Template.Firmas))
+                            {
+                                try
+                                {
+                                    var tfList = JsonSerializer.Deserialize<List<JsonElement>>(form.Template.Firmas);
+                                    if (tfList != null)
+                                    {
+                                        var tfMatch = tfList.FirstOrDefault(t => t.TryGetProperty("puesto", out var p) && p.GetString() == foundFromSlot);
+                                        if (tfMatch.ValueKind == JsonValueKind.Object)
+                                        {
+                                            if (tfMatch.TryGetProperty("nombreCompleto", out var tnc) && !string.IsNullOrEmpty(tnc.GetString()))
+                                                origNombre = tnc.GetString()!;
+                                            else if (tfMatch.TryGetProperty("nombre", out var tn) && !string.IsNullOrEmpty(tn.GetString()))
+                                                origNombre = tn.GetString()!;
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
+                            newDict[kvp.Key] = new Dictionary<string, object>
+                            {
+                                ["nombre"] = origNombre,
+                                ["email"] = "",
+                                ["fecha"] = "",
+                                ["hora"] = "",
+                                ["firma"] = new Dictionary<string, string>
+                                {
+                                    ["base64"] = "",
+                                    ["url"] = ""
+                                }
+                            };
+                        }
+                        else
+                        {
+                            newDict[kvp.Key] = kvp.Value;
+                        }
+                    }
+
+                    form.FirmasData = JsonSerializer.Serialize(newDict);
+                    modifiedCount++;
+                }
+
+                if (modifiedCount > 0)
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new { success = true, message = $"Se trasladaron exitosamente las firmas en {modifiedCount} formulario(s).", modifiedCount });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al trasladar firmas masivamente");
+                return StatusCode(500, new { message = "Error interno al trasladar firmas" });
+            }
+        }
+
+        // POST /api/Signatures/audit-clear-signatures-massive
+        [HttpPost("audit-clear-signatures-massive")]
+        public async Task<ActionResult> ClearSignaturesMassive([FromBody] ClearSignaturesRequest request)
+        {
+            try
+            {
+                var query = _context.FilledForms.Include(f => f.Template).AsQueryable();
+                if (request.FormId.HasValue && request.FormId.Value > 0)
+                    query = query.Where(f => f.FormID == request.FormId.Value);
+                if (request.TemplateId.HasValue && request.TemplateId.Value > 0)
+                    query = query.Where(f => f.TemplateID == request.TemplateId.Value);
+
+                var forms = await query.ToListAsync();
+                int modifiedCount = 0;
+
+                foreach (var form in forms)
+                {
+                    if (string.IsNullOrEmpty(form.FirmasData)) continue;
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.FirmasData);
+                    if (dict == null) continue;
+
+                    bool changed = false;
+                    var newDict = new Dictionary<string, object>();
+
+                    foreach (var kvp in dict)
+                    {
+                        bool matchesPuesto = string.IsNullOrEmpty(request.Puesto) || kvp.Key.Equals(request.Puesto, StringComparison.OrdinalIgnoreCase);
+                        bool matchesSigner = true;
+
+                        if (kvp.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            string n = kvp.Value.TryGetProperty("nombre", out var np) ? np.GetString() ?? "" : "";
+                            string e = kvp.Value.TryGetProperty("email", out var ep) ? ep.GetString() ?? "" : "";
+                            if (!string.IsNullOrEmpty(request.SignerNameOrEmail))
+                            {
+                                matchesSigner = n.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase) ||
+                                                e.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase);
+                            }
+
+                            bool hasFirma = false;
+                            if (kvp.Value.TryGetProperty("firma", out var fObj) && fObj.ValueKind == JsonValueKind.Object)
+                            {
+                                if (fObj.TryGetProperty("url", out var u) && !string.IsNullOrEmpty(u.GetString())) hasFirma = true;
+                                else if (fObj.TryGetProperty("base64", out var b) && !string.IsNullOrEmpty(b.GetString())) hasFirma = true;
+                            }
+
+                            if (matchesPuesto && matchesSigner && hasFirma)
+                            {
+                                string origNombre = "";
+                                if (form.Template != null && !string.IsNullOrEmpty(form.Template.Firmas))
+                                {
+                                    try
+                                    {
+                                        var tfList = JsonSerializer.Deserialize<List<JsonElement>>(form.Template.Firmas);
+                                        if (tfList != null)
+                                        {
+                                            var tfMatch = tfList.FirstOrDefault(t => t.TryGetProperty("puesto", out var p) && p.GetString() == kvp.Key);
+                                            if (tfMatch.ValueKind == JsonValueKind.Object)
+                                            {
+                                                if (tfMatch.TryGetProperty("nombreCompleto", out var tnc) && !string.IsNullOrEmpty(tnc.GetString()))
+                                                    origNombre = tnc.GetString()!;
+                                                else if (tfMatch.TryGetProperty("nombre", out var tn) && !string.IsNullOrEmpty(tn.GetString()))
+                                                    origNombre = tn.GetString()!;
+                                            }
+                                        }
+                                    }
+                                    catch { }
+                                }
+                                newDict[kvp.Key] = new Dictionary<string, object>
+                                {
+                                    ["nombre"] = origNombre,
+                                    ["email"] = "",
+                                    ["fecha"] = "",
+                                    ["hora"] = "",
+                                    ["firma"] = new Dictionary<string, string>
+                                    {
+                                        ["base64"] = "",
+                                        ["url"] = ""
+                                    }
+                                };
+                                changed = true;
+                                continue;
+                            }
+                        }
+                        newDict[kvp.Key] = kvp.Value;
+                    }
+
+                    if (changed)
+                    {
+                        // Si se limpió la firma en FirmasData y existe un registro en tabla Signatures, eliminarlo
+                        var sigDb = await _context.Signatures.FirstOrDefaultAsync(s => s.FilledFormId == form.FormID);
+                        if (sigDb != null && (string.IsNullOrEmpty(request.SignerNameOrEmail) || (sigDb.SignedBy != null && sigDb.SignedBy.Contains(request.SignerNameOrEmail, StringComparison.OrdinalIgnoreCase))))
+                        {
+                            _context.Signatures.Remove(sigDb);
+                        }
+
+                        form.FirmasData = JsonSerializer.Serialize(newDict);
+                        modifiedCount++;
+                    }
+                }
+
+                if (modifiedCount > 0)
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new { success = true, message = $"Se limpiaron exitosamente las firmas erróneas en {modifiedCount} formulario(s).", modifiedCount });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al limpiar firmas masivamente");
+                return StatusCode(500, new { message = "Error interno al limpiar firmas" });
+            }
+        }
+
+        // GET /api/Signatures/audit-forms
+        [HttpGet("audit-forms")]
+        public async Task<ActionResult> GetAuditForms([FromQuery] string? search = null, [FromQuery] int limit = 5000)
+        {
+            try
+            {
+                var query = _context.FilledForms
+                    .Include(f => f.Template)
+                    .AsQueryable();
+
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var s = search.ToLower();
+                    query = query.Where(f => 
+                        (f.Template != null && (f.Template.Nombre.ToLower().Contains(s) || f.Template.Codigo.ToLower().Contains(s))) ||
+                        f.FormID.ToString() == s ||
+                        (f.FilledBy != null && f.FilledBy.ToLower().Contains(s))
+                    );
+                }
+
+                var forms = await query
+                    .OrderByDescending(f => f.CreatedAt)
+                    .Take(limit)
+                    .ToListAsync();
+
+                var formIds = forms.Select(f => f.FormID).ToList();
+                var dbSignatures = await _context.Signatures
+                    .Where(s => formIds.Contains(s.FilledFormId))
+                    .ToListAsync();
+
+                var result = forms.Select(f =>
+                {
+                    var slots = new List<object>();
+                    if (!string.IsNullOrEmpty(f.FirmasData))
+                    {
+                        try
+                        {
+                            var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(f.FirmasData);
+                            if (dict != null)
+                            {
+                                foreach (var kvp in dict)
+                                {
+                                    string nombre = "";
+                                    string email = "";
+                                    string fecha = "";
+                                    string hora = "";
+                                    bool isSigned = false;
+                                    string? signatureUrl = null;
+
+                                    if (kvp.Value.ValueKind == JsonValueKind.Object)
+                                    {
+                                        if (kvp.Value.TryGetProperty("nombre", out var n)) nombre = n.GetString() ?? "";
+                                        if (nombre == "-" || string.IsNullOrEmpty(nombre))
+                                        {
+                                            if (f.Template != null && !string.IsNullOrEmpty(f.Template.Firmas))
+                                            {
+                                                try
+                                                {
+                                                    var tfList = JsonSerializer.Deserialize<List<JsonElement>>(f.Template.Firmas);
+                                                    var tfMatch = tfList?.FirstOrDefault(t => t.TryGetProperty("puesto", out var p) && p.GetString() == kvp.Key);
+                                                    if (tfMatch.HasValue && tfMatch.Value.ValueKind == JsonValueKind.Object)
+                                                    {
+                                                        if (tfMatch.Value.TryGetProperty("nombreCompleto", out var tnc) && !string.IsNullOrEmpty(tnc.GetString()))
+                                                            nombre = tnc.GetString()!;
+                                                        else if (tfMatch.Value.TryGetProperty("nombre", out var tn) && !string.IsNullOrEmpty(tn.GetString()))
+                                                            nombre = tn.GetString()!;
+                                                    }
+                                                }
+                                                catch { }
+                                            }
+                                        }
+                                        if (kvp.Value.TryGetProperty("email", out var e)) email = e.GetString() ?? "";
+                                        if (kvp.Value.TryGetProperty("fecha", out var dt)) fecha = dt.GetString() ?? "";
+                                        if (fecha == "-") fecha = "";
+                                        if (kvp.Value.TryGetProperty("hora", out var hr)) hora = hr.GetString() ?? "";
+                                        if (hora == "-") hora = "";
+                                        if (kvp.Value.TryGetProperty("firma", out var fObj) && fObj.ValueKind == JsonValueKind.Object)
+                                        {
+                                            if (fObj.TryGetProperty("url", out var u) && !string.IsNullOrEmpty(u.GetString()))
+                                            {
+                                                isSigned = true;
+                                                signatureUrl = u.GetString();
+                                            }
+                                            else if (fObj.TryGetProperty("base64", out var b) && !string.IsNullOrEmpty(b.GetString()))
+                                            {
+                                                isSigned = true;
+                                                signatureUrl = b.GetString();
+                                            }
+                                        }
+                                    }
+
+                                    var dbSig = dbSignatures.FirstOrDefault(ds => ds.FilledFormId == f.FormID && (!string.IsNullOrEmpty(email) && ds.SignedBy.Equals(email, StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(nombre) && ds.SignedBy.Equals(nombre, StringComparison.OrdinalIgnoreCase)));
+
+                                    slots.Add(new
+                                    {
+                                        puesto = kvp.Key,
+                                        nombre,
+                                        email,
+                                        fecha,
+                                        hora,
+                                        isSigned,
+                                        signatureUrl,
+                                        dbSignatureId = dbSig?.Id,
+                                        dbSignedDate = dbSig?.SignedDate,
+                                        isModifiedBySGI = dbSig?.IsModifiedBySGI ?? false,
+                                        originalSignedDate = dbSig?.OriginalSignedDate
+                                    });
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    return new
+                    {
+                        formId = f.FormID,
+                        formCode = f.Template?.Codigo ?? "N/A",
+                        templateName = f.Template?.Nombre ?? $"Formulario #{f.FormID}",
+                        area = f.Template?.Proceso ?? f.Template?.Area ?? "General",
+                        createdAt = f.CreatedAt,
+                        filledBy = f.FilledBy ?? "Usuario",
+                        signatures = slots
+                    };
+                }).ToList();
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al obtener formularios para auditoría");
+                return StatusCode(500, new { message = "Error al obtener formularios de auditoría" });
+            }
+        }
+
+        // PUT /api/Signatures/audit-update-date/{formId}
+        [HttpPut("audit-update-date/{formId}")]
+        public async Task<ActionResult> AuditUpdateDate(int formId, [FromBody] AuditUpdateSignatureDateRequest request)
+        {
+            try
+            {
+                var form = await _context.FilledForms.FindAsync(formId);
+                if (form == null)
+                {
+                    return NotFound(new { message = "Formulario no encontrado" });
+                }
+
+                bool updated = false;
+                string? targetEmailOrName = null;
+
+                if (!string.IsNullOrEmpty(form.FirmasData))
+                {
+                    try
+                    {
+                        var dict = JsonNode.Parse(form.FirmasData)?.AsObject();
+                        if (dict != null && dict.ContainsKey(request.Puesto))
+                        {
+                            var slotObj = dict[request.Puesto]?.AsObject();
+                            if (slotObj != null)
+                            {
+                                if (slotObj.ContainsKey("email")) targetEmailOrName = slotObj["email"]?.ToString();
+                                if (string.IsNullOrEmpty(targetEmailOrName) && slotObj.ContainsKey("nombre")) targetEmailOrName = slotObj["nombre"]?.ToString();
+
+                                slotObj["fecha"] = request.NewDate;
+                                if (!string.IsNullOrEmpty(request.NewHour))
+                                {
+                                    slotObj["hora"] = request.NewHour;
+                                }
+
+                                dict[request.Puesto] = slotObj;
+                                form.FirmasData = dict.ToJsonString();
+                                updated = true;
+                            }
+                        }
+                    }
+                    catch (Exception parseEx)
+                    {
+                        _logger.LogWarning(parseEx, "No se pudo actualizar FirmasData en form {FormId}", formId);
+                    }
+                }
+
+                // También actualizar en la tabla Signatures si existe un registro coincidente
+                var dbSignatures = await _context.Signatures.Where(s => s.FilledFormId == formId).ToListAsync();
+                Signature? targetSig = null;
+
+                if (!string.IsNullOrEmpty(targetEmailOrName))
+                {
+                    targetSig = dbSignatures.FirstOrDefault(s => s.SignedBy.Equals(targetEmailOrName, StringComparison.OrdinalIgnoreCase));
+                }
+                if (targetSig == null && dbSignatures.Count == 1)
+                {
+                    targetSig = dbSignatures.First();
+                }
+
+                if (targetSig != null)
+                {
+                    if (!targetSig.IsModifiedBySGI)
+                    {
+                        targetSig.OriginalSignedDate = targetSig.SignedDate;
+                        targetSig.IsModifiedBySGI = true;
+                    }
+                    
+                    if (DateTime.TryParse($"{request.NewDate} {(request.NewHour ?? "12:00")}", out var parsedDate))
+                    {
+                        targetSig.SignedDate = parsedDate;
+                    }
+                    else if (DateTime.TryParse(request.NewDate, out var onlyDate))
+                    {
+                        targetSig.SignedDate = onlyDate;
+                    }
+
+                    if (!string.IsNullOrEmpty(request.Reason))
+                    {
+                        targetSig.Comments = string.IsNullOrEmpty(targetSig.Comments) 
+                            ? $"[SGI Audit: {request.Reason}]" 
+                            : $"{targetSig.Comments} | [SGI Audit: {request.Reason}]";
+                    }
+                    updated = true;
+                }
+
+                if (updated)
+                {
+                    form.UpdatedAt = DateTime.Now;
+                    await _context.SaveChangesAsync();
+                    return Ok(new { success = true, message = "Fecha de firma actualizada correctamente para auditoría." });
+                }
+                else
+                {
+                    return BadRequest(new { success = false, message = "No se encontró el puesto especificado o no hay firma registrada en este formulario." });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al actualizar fecha por auditoría en formulario {FormId}", formId);
+                return StatusCode(500, new { message = "Error al procesar actualización de fecha para auditoría." });
+            }
+        }
+
+        // POST /api/Signatures/audit-update-date-massive
+        [HttpPost("audit-update-date-massive")]
+        public async Task<ActionResult> AuditUpdateDateMassive([FromBody] AuditUpdateSignatureDateMassiveRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.NewDate))
+                {
+                    return BadRequest(new { message = "La nueva fecha es obligatoria." });
+                }
+
+                var query = _context.FilledForms.Include(f => f.Template).AsQueryable();
+
+                if (!string.IsNullOrWhiteSpace(request.TemplateCodeOrName))
+                {
+                    var s = request.TemplateCodeOrName.ToLower();
+                    query = query.Where(f => (f.Template != null && (f.Template.Nombre.ToLower().Contains(s) || f.Template.Codigo.ToLower().Contains(s))));
+                }
+
+                var forms = await query.ToListAsync();
+                var formIds = forms.Select(f => f.FormID).ToList();
+                var dbSignatures = await _context.Signatures.Where(s => formIds.Contains(s.FilledFormId)).ToListAsync();
+
+                int updatedFormsCount = 0;
+                int updatedSlotsCount = 0;
+
+                foreach (var form in forms)
+                {
+                    if (string.IsNullOrEmpty(form.FirmasData)) continue;
+
+                    bool formUpdated = false;
+                    try
+                    {
+                        var dict = JsonNode.Parse(form.FirmasData)?.AsObject();
+                        if (dict != null)
+                        {
+                            foreach (var kvp in dict.ToList())
+                            {
+                                var puestoKey = kvp.Key;
+                                if (!string.IsNullOrWhiteSpace(request.Puesto) && !request.Puesto.Equals(puestoKey, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    continue;
+                                }
+
+                                var slotObj = kvp.Value?.AsObject();
+                                if (slotObj == null) continue;
+
+                                string targetEmailOrName = "";
+                                if (slotObj.ContainsKey("email")) targetEmailOrName = slotObj["email"]?.ToString() ?? "";
+                                if (string.IsNullOrEmpty(targetEmailOrName) && slotObj.ContainsKey("nombre")) targetEmailOrName = slotObj["nombre"]?.ToString() ?? "";
+
+                                if (!string.IsNullOrWhiteSpace(request.SignerNameOrEmail))
+                                {
+                                    var filter = request.SignerNameOrEmail.Trim();
+                                    if (!targetEmailOrName.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
+                                        !puestoKey.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        continue;
+                                    }
+                                }
+
+                                // Solo actualizar si el slot tiene firma o datos de fecha
+                                bool isSigned = false;
+                                if (slotObj.ContainsKey("firma") && slotObj["firma"]?.AsObject() != null) isSigned = true;
+                                if (slotObj.ContainsKey("fecha") && !string.IsNullOrEmpty(slotObj["fecha"]?.ToString()) && slotObj["fecha"]?.ToString() != "-") isSigned = true;
+
+                                if (isSigned || !string.IsNullOrWhiteSpace(request.SignerNameOrEmail))
+                                {
+                                    slotObj["fecha"] = request.NewDate;
+                                    if (!string.IsNullOrEmpty(request.NewHour))
+                                    {
+                                        slotObj["hora"] = request.NewHour;
+                                    }
+
+                                    dict[puestoKey] = slotObj;
+                                    formUpdated = true;
+                                    updatedSlotsCount++;
+
+                                    // Actualizar en tabla Signatures si existe
+                                    var matchingSigs = dbSignatures.Where(s => s.FilledFormId == form.FormID && (!string.IsNullOrEmpty(targetEmailOrName) && s.SignedBy.Equals(targetEmailOrName, StringComparison.OrdinalIgnoreCase))).ToList();
+                                    if (!matchingSigs.Any() && dbSignatures.Count(s => s.FilledFormId == form.FormID) == 1 && string.IsNullOrWhiteSpace(request.Puesto))
+                                    {
+                                        matchingSigs = dbSignatures.Where(s => s.FilledFormId == form.FormID).ToList();
+                                    }
+
+                                    foreach (var targetSig in matchingSigs)
+                                    {
+                                        if (!targetSig.IsModifiedBySGI)
+                                        {
+                                            targetSig.OriginalSignedDate = targetSig.SignedDate;
+                                            targetSig.IsModifiedBySGI = true;
+                                        }
+
+                                        if (DateTime.TryParse($"{request.NewDate} {(request.NewHour ?? "12:00")}", out var parsedDate))
+                                        {
+                                            targetSig.SignedDate = parsedDate;
+                                        }
+                                        else if (DateTime.TryParse(request.NewDate, out var onlyDate))
+                                        {
+                                            targetSig.SignedDate = onlyDate;
+                                        }
+
+                                        if (!string.IsNullOrEmpty(request.Reason))
+                                        {
+                                            targetSig.Comments = string.IsNullOrEmpty(targetSig.Comments)
+                                                ? $"[SGI Audit Mass Date: {request.Reason}]"
+                                                : $"{targetSig.Comments} | [SGI Audit Mass Date: {request.Reason}]";
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (formUpdated)
+                            {
+                                form.FirmasData = dict.ToJsonString();
+                                form.UpdatedAt = DateTime.Now;
+                                updatedFormsCount++;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error al procesar form {FormId} en actualización masiva de fecha", form.FormID);
+                    }
+                }
+
+                if (updatedFormsCount > 0)
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    updatedFormsCount,
+                    updatedSlotsCount,
+                    message = $"Se actualizaron las fechas de {updatedSlotsCount} firmas en {updatedFormsCount} formularios."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en AuditUpdateDateMassive");
+                return StatusCode(500, new { message = "Error interno al actualizar fechas masivamente." });
+            }
+        }
+
         // ===== HELPERS =====
 
         /// <summary>
@@ -663,6 +1326,7 @@ namespace FormBuilder.API.Controllers
 
                 string targetPuesto = null;
                 bool foundByEmailMatch = false;
+                bool matchedAsSuplente = false;
 
                 // 🎯 PRIORIDAD 0: Si el frontend especificó exactamente qué puesto firmar (TargetPuesto)
                 if (!string.IsNullOrEmpty(targetPuestoParam) && firmasDict.ContainsKey(targetPuestoParam))
@@ -677,49 +1341,98 @@ namespace FormBuilder.API.Controllers
                     if (!yaFirmadoSlotParam)
                     {
                         targetPuesto = targetPuestoParam;
+                        foundByEmailMatch = true;
                     }
                 }
 
-                foreach (var kvp in firmasDict)
+                // 🎯 PRIORIDAD 1: Buscar en firmasDict por email o nombre
+                if (targetPuesto == null)
                 {
-                    // Verificar si este puesto tiene email que coincide con signedBy
-                    if (kvp.Value.ValueKind == JsonValueKind.Object)
+                    foreach (var kvp in firmasDict)
                     {
-                        // ✅ SKIP: si ya tiene firma, no volver a firmar este slot
-                        bool yaFirmado = false;
-                        if (kvp.Value.TryGetProperty("firma", out var firmaCheck) && firmaCheck.ValueKind == JsonValueKind.Object)
+                        if (kvp.Value.ValueKind == JsonValueKind.Object)
                         {
-                            if (firmaCheck.TryGetProperty("url", out var uChk) && !string.IsNullOrEmpty(uChk.GetString())) yaFirmado = true;
-                            else if (firmaCheck.TryGetProperty("base64", out var bChk) && !string.IsNullOrEmpty(bChk.GetString())) yaFirmado = true;
-                        }
-                        if (yaFirmado) continue;
-
-                        if (kvp.Value.TryGetProperty("email", out var emailProp))
-                        {
-                            var email = emailProp.GetString();
-                            if (!string.IsNullOrEmpty(email) && email.Equals(signedBy, StringComparison.OrdinalIgnoreCase))
+                            bool yaFirmado = false;
+                            if (kvp.Value.TryGetProperty("firma", out var firmaCheck) && firmaCheck.ValueKind == JsonValueKind.Object)
                             {
-                                targetPuesto = kvp.Key;
-                                foundByEmailMatch = true;
-                                break;
+                                if (firmaCheck.TryGetProperty("url", out var uChk) && !string.IsNullOrEmpty(uChk.GetString())) yaFirmado = true;
+                                else if (firmaCheck.TryGetProperty("base64", out var bChk) && !string.IsNullOrEmpty(bChk.GetString())) yaFirmado = true;
                             }
-                        }
-                        // Tambien buscar por nombre
-                        if (kvp.Value.TryGetProperty("nombre", out var nombreProp))
-                        {
-                            var nombre = nombreProp.GetString();
-                            if (!string.IsNullOrEmpty(nombre) && nombre.Equals(signedBy, StringComparison.OrdinalIgnoreCase))
+                            if (yaFirmado) continue;
+
+                            if (kvp.Value.TryGetProperty("email", out var emailProp))
                             {
-                                targetPuesto = kvp.Key;
-                                foundByEmailMatch = true;
-                                break;
+                                var email = emailProp.GetString();
+                                if (!string.IsNullOrEmpty(email) && email.Equals(signedBy, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    targetPuesto = kvp.Key;
+                                    foundByEmailMatch = true;
+                                    break;
+                                }
+                            }
+                            if (kvp.Value.TryGetProperty("nombre", out var nombreProp))
+                            {
+                                var nombre = nombreProp.GetString();
+                                if (!string.IsNullOrEmpty(nombre) && (nombre.Equals(signedBy, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrEmpty(signerNombre) && nombre.Equals(signerNombre, StringComparison.OrdinalIgnoreCase))))
+                                {
+                                    targetPuesto = kvp.Key;
+                                    foundByEmailMatch = true;
+                                    break;
+                                }
                             }
                         }
                     }
                 }
 
-                // Si no encontramos por email/nombre, intentar usando reemplazos del template
-                // para encontrar el slot correcto del firmante suplente
+                // 🎯 PRIORIDAD 2: Buscar en la definición del Template si el usuario es TITULAR de un puesto sin firmar
+                if (targetPuesto == null && (!string.IsNullOrEmpty(signerNombre) || !string.IsNullOrEmpty(signedBy)))
+                {
+                    var templateFirmasJson = form.Template?.Firmas;
+                    if (!string.IsNullOrEmpty(templateFirmasJson))
+                    {
+                        try
+                        {
+                            var tfList = JsonSerializer.Deserialize<List<JsonElement>>(templateFirmasJson);
+                            if (tfList != null)
+                            {
+                                foreach (var tf in tfList)
+                                {
+                                    string tfPuesto = tf.TryGetProperty("puesto", out var pProp) ? pProp.GetString() ?? "" : "";
+                                    if (string.IsNullOrEmpty(tfPuesto)) continue;
+
+                                    // Comprobar si en el template este puesto tiene el email o nombre de este firmante
+                                    string tfEmail = tf.TryGetProperty("email", out var eP) ? eP.GetString() ?? "" : "";
+                                    string tfNombre = tf.TryGetProperty("nombre", out var nP) ? nP.GetString() ?? "" : "";
+
+                                    bool esTitularEnTemplate = (!string.IsNullOrEmpty(tfEmail) && tfEmail.Equals(signedBy, StringComparison.OrdinalIgnoreCase)) ||
+                                                               (!string.IsNullOrEmpty(tfNombre) && !string.IsNullOrEmpty(signerNombre) && tfNombre.Equals(signerNombre, StringComparison.OrdinalIgnoreCase));
+
+                                    if (!esTitularEnTemplate) continue;
+
+                                    // Verificar que el slot correspondiente no esté ya firmado
+                                    if (firmasDict.TryGetValue(tfPuesto, out var slotEl) && slotEl.ValueKind == JsonValueKind.Object)
+                                    {
+                                        bool yaFirmadoSlot = false;
+                                        if (slotEl.TryGetProperty("firma", out var fChk) && fChk.ValueKind == JsonValueKind.Object)
+                                        {
+                                            if (fChk.TryGetProperty("url", out var u2) && !string.IsNullOrEmpty(u2.GetString())) yaFirmadoSlot = true;
+                                            else if (fChk.TryGetProperty("base64", out var b2) && !string.IsNullOrEmpty(b2.GetString())) yaFirmadoSlot = true;
+                                        }
+                                        if (!yaFirmadoSlot)
+                                        {
+                                            targetPuesto = tfPuesto;
+                                            foundByEmailMatch = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                // 🎯 PRIORIDAD 3: Buscar en la definición del Template si el usuario es SUPLENTE (reemplazos)
                 if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre))
                 {
                     var templateFirmasJson = form.Template?.Firmas;
@@ -735,7 +1448,6 @@ namespace FormBuilder.API.Controllers
                                     string tfPuesto = tf.TryGetProperty("puesto", out var pProp) ? pProp.GetString() ?? "" : "";
                                     if (string.IsNullOrEmpty(tfPuesto)) continue;
 
-                                    // Comprobar si el signer es reemplazo para este puesto
                                     bool esReemplazoEnPuesto = false;
                                     if (tf.TryGetProperty("reemplazos", out var rArr) && rArr.ValueKind == JsonValueKind.Array)
                                     {
@@ -748,7 +1460,6 @@ namespace FormBuilder.API.Controllers
                                     }
                                     if (!esReemplazoEnPuesto) continue;
 
-                                    // Verificar que el slot correspondiente no esté ya firmado
                                     if (firmasDict.TryGetValue(tfPuesto, out var slotEl) && slotEl.ValueKind == JsonValueKind.Object)
                                     {
                                         bool yaFirmadoSlot = false;
@@ -760,17 +1471,44 @@ namespace FormBuilder.API.Controllers
                                         if (!yaFirmadoSlot)
                                         {
                                             targetPuesto = tfPuesto;
+                                            matchedAsSuplente = true;
                                             break;
                                         }
                                     }
                                 }
                             }
                         }
-                        catch { /* si falla el parse, continuamos al fallback */ }
+                        catch { }
                     }
                 }
 
-                // Si no encontramos por email/nombre, buscar el primer puesto sin firma
+                // 🎯 PRIORIDAD 4: Buscar por coincidencia parcial en el nombre del puesto
+                if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre))
+                {
+                    foreach (var kvp in firmasDict)
+                    {
+                        if (kvp.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            bool yaFirmado = false;
+                            if (kvp.Value.TryGetProperty("firma", out var firmaCheck) && firmaCheck.ValueKind == JsonValueKind.Object)
+                            {
+                                if (firmaCheck.TryGetProperty("url", out var uChk) && !string.IsNullOrEmpty(uChk.GetString())) yaFirmado = true;
+                                else if (firmaCheck.TryGetProperty("base64", out var bChk) && !string.IsNullOrEmpty(bChk.GetString())) yaFirmado = true;
+                            }
+                            if (yaFirmado) continue;
+
+                            // Si el nombre del puesto contiene parte del rol o nombre
+                            if (signerNombre.Contains("Calidad", StringComparison.OrdinalIgnoreCase) && kvp.Key.Contains("Calidad", StringComparison.OrdinalIgnoreCase))
+                            {
+                                targetPuesto = kvp.Key;
+                                foundByEmailMatch = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 🎯 FALLBACK: Si no encontramos por nada, buscar el primer puesto sin firma
                 if (targetPuesto == null)
                 {
                     foreach (var kvp in firmasDict)
@@ -778,15 +1516,10 @@ namespace FormBuilder.API.Controllers
                         if (kvp.Value.ValueKind == JsonValueKind.Object)
                         {
                             bool hasFirma = false;
-                            if (kvp.Value.TryGetProperty("firma", out var firmaObj))
+                            if (kvp.Value.TryGetProperty("firma", out var firmaObj) && firmaObj.ValueKind == JsonValueKind.Object)
                             {
-                                if (firmaObj.ValueKind == JsonValueKind.Object)
-                                {
-                                    if (firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString()))
-                                        hasFirma = true;
-                                    else if (firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString()))
-                                        hasFirma = true;
-                                }
+                                if (firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString())) hasFirma = true;
+                                else if (firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString())) hasFirma = true;
                             }
 
                             if (!hasFirma)
@@ -798,19 +1531,16 @@ namespace FormBuilder.API.Controllers
                     }
                 }
 
-                // Si aun no hay target, usar el primer puesto disponible
                 if (targetPuesto == null && firmasDict.Count > 0)
                 {
                     targetPuesto = firmasDict.Keys.First();
                 }
 
-                // Si no hay ningun puesto en firmasData, crear uno generico
                 if (targetPuesto == null)
                 {
                     targetPuesto = "Aprobado por";
                 }
 
-                // Construir el nuevo objeto de firma para ese puesto
                 var existingData = firmasDict.ContainsKey(targetPuesto) ? firmasDict[targetPuesto] : default;
 
                 string existingNombre = signedBy;
@@ -828,20 +1558,15 @@ namespace FormBuilder.API.Controllers
                         existingFecha = f.GetString()!;
                 }
 
-                // Determinar el nombre a mostrar:
-                // - Si el email coincidio (es el encargado titular), usar el nombre existente del template
-                // - Si NO coincidio (es suplente), usar el nombre real del firmante (signerNombre)
                 string nombreMostrado = existingNombre;
-                bool esSuplente = false;
+                bool esSuplente = matchedAsSuplente;
                 string nombreEncargadoOriginal = existingNombre;
 
                 if (!foundByEmailMatch && !string.IsNullOrEmpty(signerNombre))
                 {
                     nombreMostrado = signerNombre;
-                    esSuplente = true;
                 }
 
-                // Crear el nuevo objeto con la firma incluida
                 var updatedPuesto = new Dictionary<string, object>
                 {
                     ["nombre"] = nombreMostrado,
@@ -857,14 +1582,13 @@ namespace FormBuilder.API.Controllers
                     }
                 };
 
-                // Si es suplente, registrar datos de reemplazo
+                // SOLO si realmente coincidió por reemplazos se marca esReemplazo
                 if (esSuplente)
                 {
                     updatedPuesto["esReemplazo"] = true;
                     updatedPuesto["reemplazandoA"] = nombreEncargadoOriginal;
                 };
 
-                // Reconstruir todo el firmasData
                 var newFirmasDict = new Dictionary<string, object>();
                 foreach (var kvp in firmasDict)
                 {
@@ -1438,5 +2162,23 @@ namespace FormBuilder.API.Controllers
         {
             return obj.Puesto.ToLower().GetHashCode();
         }
+    }
+
+    public class MoveSignaturesRequest
+    {
+        public string? FromPuesto { get; set; }
+        public string ToPuesto { get; set; } = "";
+        public string? SignerNameOrEmail { get; set; }
+        public string? NewSignerName { get; set; }
+        public int? FormId { get; set; }
+        public int? TemplateId { get; set; }
+    }
+
+    public class ClearSignaturesRequest
+    {
+        public string? Puesto { get; set; }
+        public string? SignerNameOrEmail { get; set; }
+        public int? FormId { get; set; }
+        public int? TemplateId { get; set; }
     }
 }

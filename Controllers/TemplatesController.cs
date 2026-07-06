@@ -212,76 +212,11 @@ public async Task<IActionResult> PutTemplate(int id, [FromBody] Template templat
     _context.Entry(template).State = EntityState.Modified;
     await _context.SaveChangesAsync();
 
-    // 🔔 ALERTAS: Notificar a TODOS los usuarios del catálogo cuando cambia el formato
+    // 🔕 ALERTAS: Se desactivó el envío masivo automático de correos en cada guardado/modificación 
+    // de plantilla, a petición del usuario para evitar saturar las bandejas de entrada al realizar cambios en producción.
     if (cambioAlgo)
     {
-        try
-        {
-            var subject = $"🔄 Plantilla Actualizada: {template.Codigo} - {template.Nombre} (v{template.Version})";
-            var body = $"<html><body style='font-family:Arial;padding:20px;'>"
-                + $"<div style='background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0;'>"
-                + $"<h2 style='margin:0;'>🔄 Modificación de Plantilla</h2></div>"
-                + $"<div style='border:1px solid #e5e7eb;padding:20px;border-radius:0 0 8px 8px;'>"
-                + $"<p><strong>Código:</strong> {template.Codigo}</p>"
-                + $"<p><strong>Nombre:</strong> {template.Nombre}</p>"
-                + $"<p><strong>Nueva Versión:</strong> {template.Version}</p>"
-                + $"<p><strong>Fecha:</strong> {DateTime.Now:dd/MM/yyyy HH:mm}</p>"
-                + $"<p><strong>Motivo:</strong> Actualización de estructura/datos detectada</p>"
-                + $"<hr style='border:1px solid #e5e7eb;'/>"
-                + $"<p style='color:#6b7280;font-size:12px;'>Este correo se genera automáticamente cuando se modifica una plantilla. Por favor revise los cambios.</p>"
-                + $"</div></body></html>";
-
-            // Enviar a TODOS los usuarios activos del catálogo de firmas
-            var todosLosCorreos = await _context.CatalogoFirmas
-                .Where(c => c.Activo && !string.IsNullOrEmpty(c.Correo))
-                .Select(c => c.Correo!)
-                .Distinct()
-                .ToListAsync();
-
-            // También incluir recipients globales configurados
-            var config = await _context.AlertConfigurations.FirstOrDefaultAsync();
-            if (config != null && !string.IsNullOrEmpty(config.SignatureRecipients))
-            {
-                try
-                {
-                    var parsed = JsonSerializer.Deserialize<List<string>>(config.SignatureRecipients, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                    if (parsed != null) todosLosCorreos.AddRange(parsed);
-                }
-                catch { }
-                if (!string.IsNullOrEmpty(config.MissingFormRecipients))
-                {
-                    try
-                    {
-                        var parsed2 = JsonSerializer.Deserialize<List<string>>(config.MissingFormRecipients, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                        if (parsed2 != null) todosLosCorreos.AddRange(parsed2);
-                    }
-                    catch { }
-                }
-            }
-
-            todosLosCorreos = todosLosCorreos
-                .Where(e => !string.IsNullOrWhiteSpace(e) && e.Contains("@"))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            foreach (var correo in todosLosCorreos)
-            {
-                try
-                {
-                    await _emailService.SendAlertEmailAsync(correo, subject, body);
-                }
-                catch (Exception emailEx)
-                {
-                    _logger.LogWarning(emailEx, "Error enviando notificación de cambio a {Email}", correo);
-                }
-            }
-
-            _logger.LogInformation("📧 Notificación de cambio de plantilla {Codigo} enviada a {Count} destinatarios", template.Codigo, todosLosCorreos.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Error enviando alertas de versión para plantilla {Id}", id);
-        }
+        _logger.LogInformation("🔄 Cambio en plantilla detectado en {Codigo} - {Nombre} (v{Version}). Envío automático de correo deshabilitado por configuración.", template.Codigo, template.Nombre, template.Version);
     }
 
     return NoContent();

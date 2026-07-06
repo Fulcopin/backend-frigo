@@ -94,6 +94,9 @@ namespace FormBuilder.API.Migrations
                     b.Property<bool>("EnableSignatureAlerts")
                         .HasColumnType("bit");
 
+                    b.Property<bool>("EnableTemplateChangeAlerts")
+                        .HasColumnType("bit");
+
                     b.Property<string>("MissingFormRecipients")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -115,6 +118,10 @@ namespace FormBuilder.API.Migrations
 
                     b.Property<int>("SummaryFrequencyDays")
                         .HasColumnType("int");
+
+                    b.Property<string>("TemplateChangeRecipients")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
@@ -712,6 +719,75 @@ namespace FormBuilder.API.Migrations
                     b.HasIndex("TemplateID");
 
                     b.ToTable("TemplateVersions");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.Ticket", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreadoPorEmail")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CreadoPorNombre")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Descripcion")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Estado")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("RespondidoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RespondidoPor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RespuestaAdmin")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Titulo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Tickets");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.TicketViewer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("AgregadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UserEmail")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("UserNombre")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("TicketViewers");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.Alert", b =>

@@ -82,6 +82,26 @@ namespace FormBuilder.API.Models
         public DateTime NewDate { get; set; }
     }
     
+    public class AuditUpdateSignatureDateRequest
+    {
+        public string Puesto { get; set; } = string.Empty;
+        public string NewDate { get; set; } = string.Empty;
+        public string? NewHour { get; set; }
+        public string? Reason { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+    
+    public class AuditUpdateSignatureDateMassiveRequest
+    {
+        public string? SignerNameOrEmail { get; set; }
+        public string? Puesto { get; set; }
+        public string? TemplateCodeOrName { get; set; }
+        public string NewDate { get; set; } = string.Empty;
+        public string? NewHour { get; set; }
+        public string? Reason { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+    
     public class SignatureStatsResponse
     {
         public int PendingCount { get; set; }

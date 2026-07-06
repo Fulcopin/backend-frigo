@@ -24,7 +24,9 @@ namespace FormBuilder.API.Data
         public DbSet<FormDraft> FormDrafts { get; set; } // ✅ NUEVO: Borradores de formularios
         public DbSet<SignatureRejection> SignatureRejections { get; set; } // ✅ NUEVO: Rechazos de firma con motivo
         public DbSet<TemplateChangeLog> TemplateChangeLogs { get; set; } // ✅ NUEVO: Historial manual de cambios
-        
+        public DbSet<Ticket> Tickets { get; set; } // ✅ NUEVO: Mesa de ayuda
+        public DbSet<TicketViewer> TicketViewers { get; set; } // ✅ NUEVO: Usuarios con acceso a ver todos los tickets
+
         // NUEVO: Tabla para indexar lotes y acelerar la trazabilidad
         public DbSet<LoteTrazabilidad> LotesTrazabilidad { get; set; }
 

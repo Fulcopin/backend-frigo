@@ -1302,12 +1302,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                     }
                 }
 
-                // 📣 Notificar al responsable (quien creó/envió el formulario)
+                // 📣 Notificar al responsable (quien creó/envió el formulario) solo internamente en el sistema (sin enviar correo)
                 if (!string.IsNullOrWhiteSpace(form.FilledByEmail) && alertasCreadas > 0)
                 {
                     var responsableEmail = form.FilledByEmail.Trim();
-                    var firmantes = string.Join(", ", emailsFirmantesNotificados.Distinct(StringComparer.OrdinalIgnoreCase));
-
                     var responsableAlert = new Alert
                     {
                         Type = "signature_creator_notice",
@@ -1319,32 +1317,10 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                         FormCode = formCode,
                         CreatedDate = DateTime.Now,
                         IsRead = false,
-                        Status = "pending"
+                        Status = "sent_internal"
                     };
 
                     _context.Set<Alert>().Add(responsableAlert);
-
-                    try
-                    {
-                        var subjectResponsable = $"📣 Solicitudes de firma enviadas - {templateName}";
-                        var bodyResponsable = $@"
-                            <html><body style='font-family: Arial, sans-serif;'>
-                                <h2>Solicitudes de firma enviadas</h2>
-                                <p>Se enviaron solicitudes de firma para el formulario <strong>{formCode}</strong> ({templateName}).</p>
-                                <p><strong>Total de firmantes notificados:</strong> {alertasCreadas}</p>
-                                <p><strong>Destinatarios:</strong> {System.Net.WebUtility.HtmlEncode(firmantes)}</p>
-                                <p>Puedes revisar el estado de firmas en el módulo de gestión de firmas/alertas.</p>
-                            </body></html>
-                        ";
-
-                        var sentResponsable = await _emailService.SendAlertEmailAsync(responsableEmail, subjectResponsable, bodyResponsable);
-                        responsableAlert.Status = sentResponsable ? "sent" : "failed";
-                    }
-                    catch (Exception exResponsable)
-                    {
-                        responsableAlert.Status = "failed";
-                        _logger.LogError(exResponsable, "❌ Error notificando al responsable {Email} para formulario {FormId}", responsableEmail, form.FormID);
-                    }
                 }
 
                 await _context.SaveChangesAsync();

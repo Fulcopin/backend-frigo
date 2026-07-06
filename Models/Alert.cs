@@ -38,6 +38,8 @@ namespace FormBuilder.API.Models
         public int SignatureAlertDelay { get; set; } = 24;
         public string SignatureRecipients { get; set; } = "[]";
         public int SummaryFrequencyDays { get; set; } = 7;
+        public bool EnableTemplateChangeAlerts { get; set; } = false;
+        public string TemplateChangeRecipients { get; set; } = "[]";
         public string SenderEmail { get; set; } = "alertas@frigolab.com";
         public string SenderName { get; set; } = "Frigolab Alertas";
     }
