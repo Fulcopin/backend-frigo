@@ -93,6 +93,7 @@ namespace FormBuilder.API.Controllers
                     existingConfig.SummaryFrequencyDays = config.SummaryFrequencyDays;
                     existingConfig.EnableTemplateChangeAlerts = config.EnableTemplateChangeAlerts;
                     existingConfig.TemplateChangeRecipients = config.TemplateChangeRecipients;
+                    existingConfig.LockThresholdHours = config.LockThresholdHours;
                     existingConfig.SenderEmail = config.SenderEmail;
                     existingConfig.SenderName = config.SenderName;
                 }

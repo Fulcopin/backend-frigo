@@ -86,12 +86,14 @@ namespace FormBuilder.API.Controllers
                     return NotFound(new { message = "Formulario no encontrado" });
                 }
 
-                // 🔒 BLOQUEO A LAS 36 HORAS: Debe ser habilitado en Supervisión General antes de poder firmarse
-                var diffHours = (DateTime.Now - form.CreatedAt).TotalHours;
+                // 🔒 BLOQUEO CONFIGURABLE (por defecto 36h hábiles, sin contar sábados/domingos)
+                // Debe ser habilitado en Supervisión General antes de poder firmarse
+                var lockThreshold = await GetLockThresholdHoursAsync();
+                var diffHours = BusinessHoursBetween(form.CreatedAt, DateTime.Now);
                 bool isUnlocked36h = !string.IsNullOrEmpty(form.HeaderData) && form.HeaderData.Contains("unlocked36h");
-                if (diffHours > 36 && !isUnlocked36h)
+                if (diffHours > lockThreshold && !isUnlocked36h)
                 {
-                    return BadRequest(new { message = "🔒 El registro superó el límite de 36 horas desde su creación y está bloqueado. Un Administrador debe habilitarlo en Supervisión General antes de poder firmar." });
+                    return BadRequest(new { message = $"🔒 El registro superó el límite de {lockThreshold} horas (hábiles) desde su creación y está bloqueado. Un Administrador debe habilitarlo en Supervisión General antes de poder firmar." });
                 }
 
                 var existingSignature = await _context.Signatures
@@ -160,6 +162,7 @@ namespace FormBuilder.API.Controllers
                 int signedCount = 0;
                 int failedCount = 0;
                 var signedFormNames = new List<string>();
+                var lockThresholdMulti = await GetLockThresholdHoursAsync();
 
                 foreach (var formId in request.FormIds)
                 {
@@ -174,10 +177,10 @@ namespace FormBuilder.API.Controllers
                             continue;
                         }
 
-                        // 🔒 BLOQUEO A LAS 36 HORAS PARA FIRMA MASIVA
-                        var diffHoursMulti = (DateTime.Now - form.CreatedAt).TotalHours;
+                        // 🔒 BLOQUEO CONFIGURABLE PARA FIRMA MASIVA (horas hábiles, sin findes)
+                        var diffHoursMulti = BusinessHoursBetween(form.CreatedAt, DateTime.Now);
                         bool isUnlockedMulti = !string.IsNullOrEmpty(form.HeaderData) && form.HeaderData.Contains("unlocked36h");
-                        if (diffHoursMulti > 36 && !isUnlockedMulti)
+                        if (diffHoursMulti > lockThresholdMulti && !isUnlockedMulti)
                         {
                             failedCount++;
                             continue;
@@ -1400,12 +1403,15 @@ namespace FormBuilder.API.Controllers
                                     string tfPuesto = tf.TryGetProperty("puesto", out var pProp) ? pProp.GetString() ?? "" : "";
                                     if (string.IsNullOrEmpty(tfPuesto)) continue;
 
-                                    // Comprobar si en el template este puesto tiene el email o nombre de este firmante
+                                    // Comprobar si en el template este puesto tiene el email o nombre de este firmante.
+                                    // 🔧 FIX: el template guarda el titular en "nombreCompleto" (no en "nombre"),
+                                    // por eso antes nunca se detectaba al titular y la firma caía a un reemplazo.
                                     string tfEmail = tf.TryGetProperty("email", out var eP) ? eP.GetString() ?? "" : "";
-                                    string tfNombre = tf.TryGetProperty("nombre", out var nP) ? nP.GetString() ?? "" : "";
+                                    string tfNombre = tf.TryGetProperty("nombreCompleto", out var ncP) ? ncP.GetString() ?? "" : "";
+                                    if (string.IsNullOrEmpty(tfNombre) && tf.TryGetProperty("nombre", out var nP)) tfNombre = nP.GetString() ?? "";
 
-                                    bool esTitularEnTemplate = (!string.IsNullOrEmpty(tfEmail) && tfEmail.Equals(signedBy, StringComparison.OrdinalIgnoreCase)) ||
-                                                               (!string.IsNullOrEmpty(tfNombre) && !string.IsNullOrEmpty(signerNombre) && tfNombre.Equals(signerNombre, StringComparison.OrdinalIgnoreCase));
+                                    bool esTitularEnTemplate = NameEquals(tfEmail, signedBy) ||
+                                                               NameEquals(tfNombre, signerNombre);
 
                                     if (!esTitularEnTemplate) continue;
 
@@ -1432,8 +1438,11 @@ namespace FormBuilder.API.Controllers
                     }
                 }
 
-                // 🎯 PRIORIDAD 3: Buscar en la definición del Template si el usuario es SUPLENTE (reemplazos)
-                if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre))
+                // 🎯 PRIORIDAD 3: Buscar en la definición del Template si el usuario es SUPLENTE (reemplazos).
+                // 🔧 GUARDIA: solo se asigna como reemplazo si el firmante NO es titular de ningún puesto
+                // sin firmar (el titular siempre gana). Esto evita que la firma de un titular sin reemplazo
+                // se desplace a otro puesto marcada como reemplazo.
+                if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre) && !EsTitularDeSlotSinFirmar(form, firmasDict, signedBy, signerNombre))
                 {
                     var templateFirmasJson = form.Template?.Firmas;
                     if (!string.IsNullOrEmpty(templateFirmasJson))
@@ -1615,6 +1624,105 @@ namespace FormBuilder.API.Controllers
             {
                 _logger.LogWarning(ex, "No se pudo actualizar FirmasData para formulario {FormId}", form.FormID);
             }
+        }
+
+        /// <summary>
+        /// Compara dos nombres/emails de forma tolerante (Trim + case-insensitive).
+        /// </summary>
+        private static bool NameEquals(string? a, string? b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+            return a.Trim().Equals(b.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Determina si el firmante es el TITULAR (por nombreCompleto/nombre o email) de algún puesto
+        /// del template cuyo slot todavía no está firmado. Se usa como guardia para no desplazar la
+        /// firma de un titular hacia un puesto de reemplazo.
+        /// </summary>
+        private static bool EsTitularDeSlotSinFirmar(FilledForm form, Dictionary<string, JsonElement> firmasDict, string? signedBy, string? signerNombre)
+        {
+            var templateFirmasJson = form.Template?.Firmas;
+            if (string.IsNullOrEmpty(templateFirmasJson)) return false;
+            try
+            {
+                var tfList = JsonSerializer.Deserialize<List<JsonElement>>(templateFirmasJson);
+                if (tfList == null) return false;
+                foreach (var tf in tfList)
+                {
+                    string tfPuesto = tf.TryGetProperty("puesto", out var pProp) ? pProp.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(tfPuesto)) continue;
+
+                    string tfEmail = tf.TryGetProperty("email", out var eP) ? eP.GetString() ?? "" : "";
+                    string tfNombre = tf.TryGetProperty("nombreCompleto", out var ncP) ? ncP.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(tfNombre) && tf.TryGetProperty("nombre", out var nP)) tfNombre = nP.GetString() ?? "";
+
+                    bool esTitular = NameEquals(tfEmail, signedBy) || NameEquals(tfNombre, signerNombre);
+                    if (!esTitular) continue;
+
+                    // ¿Su slot está sin firmar?
+                    if (firmasDict.TryGetValue(tfPuesto, out var slotEl) && slotEl.ValueKind == JsonValueKind.Object)
+                    {
+                        bool yaFirmado = false;
+                        if (slotEl.TryGetProperty("firma", out var fChk) && fChk.ValueKind == JsonValueKind.Object)
+                        {
+                            if (fChk.TryGetProperty("url", out var u2) && !string.IsNullOrEmpty(u2.GetString())) yaFirmado = true;
+                            else if (fChk.TryGetProperty("base64", out var b2) && !string.IsNullOrEmpty(b2.GetString())) yaFirmado = true;
+                        }
+                        if (!yaFirmado) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Lee el umbral de horas para bloqueo desde AlertConfiguration (configurable por el admin).
+        /// Si no hay config o el valor es inválido (&lt;= 0), usa 36 por defecto.
+        /// </summary>
+        private async Task<int> GetLockThresholdHoursAsync()
+        {
+            try
+            {
+                var config = await _context.AlertConfigurations.FirstOrDefaultAsync();
+                if (config != null && config.LockThresholdHours > 0)
+                    return config.LockThresholdHours;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudo leer LockThresholdHours, usando 36 por defecto");
+            }
+            return 36;
+        }
+
+        /// <summary>
+        /// Cuenta las horas transcurridas entre dos fechas EXCLUYENDO sábados y domingos
+        /// (son horas no oficiales y no deben contar para el bloqueo). Cuenta el tiempo real
+        /// que cae en días de lunes a viernes.
+        /// </summary>
+        public static double BusinessHoursBetween(DateTime start, DateTime end)
+        {
+            if (end <= start) return 0;
+
+            double totalHours = 0;
+            var cursor = start;
+
+            while (cursor < end)
+            {
+                // Fin del día actual (medianoche siguiente)
+                var nextMidnight = cursor.Date.AddDays(1);
+                var segmentEnd = nextMidnight < end ? nextMidnight : end;
+
+                if (cursor.DayOfWeek != DayOfWeek.Saturday && cursor.DayOfWeek != DayOfWeek.Sunday)
+                {
+                    totalHours += (segmentEnd - cursor).TotalHours;
+                }
+
+                cursor = segmentEnd;
+            }
+
+            return totalHours;
         }
 
         /// <summary>

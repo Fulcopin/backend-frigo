@@ -40,6 +40,7 @@ namespace FormBuilder.API.Models
         public int SummaryFrequencyDays { get; set; } = 7;
         public bool EnableTemplateChangeAlerts { get; set; } = false;
         public string TemplateChangeRecipients { get; set; } = "[]";
+        public int LockThresholdHours { get; set; } = 36;
         public string SenderEmail { get; set; } = "alertas@frigolab.com";
         public string SenderName { get; set; } = "Frigolab Alertas";
     }
