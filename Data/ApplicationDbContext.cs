@@ -26,6 +26,7 @@ namespace FormBuilder.API.Data
         public DbSet<TemplateChangeLog> TemplateChangeLogs { get; set; } // ✅ NUEVO: Historial manual de cambios
         public DbSet<Ticket> Tickets { get; set; } // ✅ NUEVO: Mesa de ayuda
         public DbSet<TicketViewer> TicketViewers { get; set; } // ✅ NUEVO: Usuarios con acceso a ver todos los tickets
+        public DbSet<Indicador> Indicadores { get; set; } // ✅ NUEVO: Tablero de indicadores
 
         // NUEVO: Tabla para indexar lotes y acelerar la trazabilidad
         public DbSet<LoteTrazabilidad> LotesTrazabilidad { get; set; }
