@@ -65,6 +65,22 @@ namespace FormBuilder.API.Models
         // ✅ NUEVO: Indica si la plantilla está obsoleta (no aparece en listado para llenar pero se conservan registros)
         public bool IsObsolete { get; set; } = false;
 
+        // ── 📎 Enlace de ayuda ───────────────────────────────────────────────
+        // Un enlace al instructivo de la plantilla: un PDF en Drive, una foto
+        // de un formulario lleno de ejemplo, una tabla de referencia.
+        //
+        // Se guarda la URL y no el archivo: así el documento se actualiza donde
+        // ya vive —SharePoint, Drive, la red interna— sin volver a cargarlo, y
+        // la base no crece con archivos adentro.
+
+        /// <summary>URL del documento de ayuda.</summary>
+        [StringLength(1000)]
+        public string? AyudaUrl { get; set; }
+
+        /// <summary>Qué es y cuándo mirarlo.</summary>
+        [StringLength(500)]
+        public string? AyudaNota { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.Now;
         public DateTime? UpdatedAt { get; set; }
     }

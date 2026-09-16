@@ -239,9 +239,32 @@ namespace FormBuilder.API.Services
             try
             {
                 var config = await context.AlertConfigurations.FirstOrDefaultAsync();
-                if (config == null || !config.EnableSignatureAlerts) return;
+                if (config == null) return;
 
-                var threshold = DateTime.Now.AddHours(-config.SignatureAlertDelay);
+                // Excepciones por plantilla. Las que no tienen fila siguen con la
+                // configuración global, así que apagar el global las apaga a todas
+                // menos a las que se activaron explícitamente acá.
+                var porPlantilla = await context.AlertConfigTemplates
+                    .AsNoTracking()
+                    .ToDictionaryAsync(x => x.TemplateID);
+
+                // Si el global está apagado y ninguna plantilla lo pide encendido,
+                // no hay nada que revisar.
+                if (!config.EnableSignatureAlerts && !porPlantilla.Values.Any(x => x.EnableSignatureAlerts))
+                    return;
+
+                // Se toma el plazo MÁS CORTO de todos para acotar la consulta, y
+                // después se descarta fila por fila con el plazo que corresponda.
+                // Consultar con el plazo global dejaría fuera los formularios de
+                // una plantilla configurada a 4 horas.
+                var plazoMinimo = porPlantilla.Values
+                    .Where(x => x.EnableSignatureAlerts)
+                    .Select(x => x.SignatureAlertDelay)
+                    .Concat(config.EnableSignatureAlerts ? new[] { config.SignatureAlertDelay } : Array.Empty<int>())
+                    .DefaultIfEmpty(config.SignatureAlertDelay)
+                    .Min();
+
+                var threshold = DateTime.Now.AddHours(-plazoMinimo);
                 var candidateForms = await context.FilledForms
                     .Include(f => f.Template)
                     .Where(f => f.CreatedAt < threshold &&
@@ -251,6 +274,15 @@ namespace FormBuilder.API.Services
                 // Filtrar: excluir formularios donde TODAS las firmas ya están completadas en FirmasData
                 var pendingForms = candidateForms
                     .Where(f => !AllFirmasCompleted(f.FirmasData))
+                    // Cada formulario contra el plazo de SU plantilla.
+                    .Where(f =>
+                    {
+                        porPlantilla.TryGetValue(f.TemplateID, out var exc);
+                        var activa = exc?.EnableSignatureAlerts ?? config.EnableSignatureAlerts;
+                        if (!activa) return false;
+                        var horas = exc?.SignatureAlertDelay ?? config.SignatureAlertDelay;
+                        return f.CreatedAt < DateTime.Now.AddHours(-horas);
+                    })
                     .ToList();
 
                 // Precargar catálogo de firmas para buscar emails
@@ -266,7 +298,22 @@ namespace FormBuilder.API.Services
                     if (!existingAlert)
                     {
                         // 1) Enviar a los recipients configurados globalmente (SGI) + responsable creador
-                        var recipients = ParseRecipients(config.SignatureRecipients);
+                        // Destinatarios: los de la plantilla si tiene propios; se
+                        // suman a los globales o los reemplazan según se configuró.
+                        porPlantilla.TryGetValue(form.TemplateID, out var excForm);
+                        var recipients = new List<string>();
+                        var propios = ParseRecipients(excForm?.SignatureRecipients);
+                        if (propios.Count > 0)
+                        {
+                            recipients.AddRange(propios);
+                            if (excForm!.RecipientsSeSuman)
+                                recipients.AddRange(ParseRecipients(config.SignatureRecipients));
+                        }
+                        else
+                        {
+                            recipients.AddRange(ParseRecipients(config.SignatureRecipients));
+                        }
+
                         if (!string.IsNullOrWhiteSpace(form.FilledByEmail))
                         {
                             recipients.Add(form.FilledByEmail.Trim());

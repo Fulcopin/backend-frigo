@@ -175,6 +175,219 @@ namespace FormBuilder.API.Migrations
                     b.ToTable("CatalogoFirmas");
                 });
 
+            modelBuilder.Entity("FormBuilder.API.Models.ConfiguracionReporte", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("AgruparPor")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ColumnasVisibles")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("CompactarFilas")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("ModoResumen")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("OcultarVacias")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("OmitirTotalesDelForm")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Operaciones")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("SubtotalPorForm")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("TemplateID")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("UnaLineaPorForm")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TemplateID")
+                        .IsUnique()
+                        .HasFilter("[TemplateID] IS NOT NULL");
+
+                    b.ToTable("ConfiguracionesReporte");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.ConsultaPlan", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Actividad")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Clave")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Grupo")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Receta")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Actividad", "Grupo", "Clave")
+                        .IsUnique();
+
+                    b.ToTable("ConsultasPlan");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.CostoProducto", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ActualizadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<decimal>("CostoUnitario")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Moneda")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<string>("Notas")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Producto")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Unidad")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("CostosProducto");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.DocumentoManual", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("ActualizadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Area")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Codigo")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("CopiaControlada")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("Fecha")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("Observaciones")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<bool>("Obsoleto")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Ubicacion")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Version")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("DocumentosManuales");
+                });
+
             modelBuilder.Entity("FormBuilder.API.Models.FilledForm", b =>
                 {
                     b.Property<int>("FormID")
@@ -235,6 +448,48 @@ namespace FormBuilder.API.Migrations
                     b.HasIndex("TemplateID");
 
                     b.ToTable("FilledForms");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.FilledFormChange", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Cambios")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ChangedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ChangedByEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ChangedByRole")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("FormID")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalCambios")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FormID");
+
+                    b.ToTable("FilledFormChanges");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.FormDraft", b =>
@@ -304,6 +559,39 @@ namespace FormBuilder.API.Migrations
                     b.ToTable("FormDrafts");
                 });
 
+            modelBuilder.Entity("FormBuilder.API.Models.Indicador", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ConfigJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreadoPor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Orden")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("TableroId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Titulo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Indicadores");
+                });
+
             modelBuilder.Entity("FormBuilder.API.Models.LoteInventario", b =>
                 {
                     b.Property<int>("Id")
@@ -364,6 +652,9 @@ namespace FormBuilder.API.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<decimal>("Saldo")
+                        .HasColumnType("decimal(18,4)");
+
                     b.Property<string>("TemplateId")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
@@ -420,6 +711,208 @@ namespace FormBuilder.API.Migrations
                     b.HasIndex("FormID");
 
                     b.ToTable("LotesTrazabilidad");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.MovimientoInventario", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Cantidad")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FormId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("LoteInventarioId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notas")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("NumeroLote")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Proceso")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal>("SaldoResultante")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("Tipo")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MovimientosInventario");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.PersonalRegistro", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("ActualizadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("CumpleEstandar")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("Fecha")
+                        .HasColumnType("date");
+
+                    b.Property<int>("FormID")
+                        .HasColumnType("int");
+
+                    b.Property<TimeSpan>("HoraDesde")
+                        .HasColumnType("time");
+
+                    b.Property<TimeSpan>("HoraHasta")
+                        .HasColumnType("time");
+
+                    b.Property<decimal>("HorasTrabajadas")
+                        .HasColumnType("decimal(6,2)");
+
+                    b.Property<string>("JustificacionVariacion")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("MotivoIncumplimiento")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Observaciones")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("PersonalExterno")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PersonalPlanta")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Proceso")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("TemplateId")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FormID");
+
+                    b.ToTable("PersonalRegistros");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.ProcesoEstandar", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Activo")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ActualizadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("DuracionMaximaHoras")
+                        .HasColumnType("decimal(6,2)");
+
+                    b.Property<decimal?>("DuracionMinimaHoras")
+                        .HasColumnType("decimal(6,2)");
+
+                    b.Property<string>("FormularioNombre")
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<TimeSpan?>("HoraFinEsperada")
+                        .HasColumnType("time");
+
+                    b.Property<TimeSpan?>("HoraInicioEsperada")
+                        .HasColumnType("time");
+
+                    b.Property<string>("Proceso")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("TemplateID")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ToleranciaMinutos")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TemplateID");
+
+                    b.ToTable("ProcesoEstandares");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.ProductionPlan", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CustomFieldsDefinition")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("FechaOperacion")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PlanData")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Turno")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ProductionPlans");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.Signature", b =>
@@ -540,6 +1033,40 @@ namespace FormBuilder.API.Migrations
                     b.HasKey("SourceFormID");
 
                     b.ToTable("SourceForms");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.Tablero", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreadoPor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Orden")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ScopeTipo")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("ScopeValor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Tableros");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.Template", b =>
@@ -728,36 +1255,6 @@ namespace FormBuilder.API.Migrations
                     b.ToTable("TemplateVersions");
                 });
 
-            modelBuilder.Entity("FormBuilder.API.Models.Indicador", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ConfigJson")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime>("CreadoEn")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("CreadoPor")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("Orden")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Titulo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Indicadores");
-                });
-
             modelBuilder.Entity("FormBuilder.API.Models.Ticket", b =>
                 {
                     b.Property<int>("Id")
@@ -847,6 +1344,17 @@ namespace FormBuilder.API.Migrations
                     b.Navigation("Template");
                 });
 
+            modelBuilder.Entity("FormBuilder.API.Models.FilledFormChange", b =>
+                {
+                    b.HasOne("FormBuilder.API.Models.FilledForm", "FilledForm")
+                        .WithMany()
+                        .HasForeignKey("FormID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("FilledForm");
+                });
+
             modelBuilder.Entity("FormBuilder.API.Models.LoteTrazabilidad", b =>
                 {
                     b.HasOne("FormBuilder.API.Models.FilledForm", "FilledForm")
@@ -856,6 +1364,26 @@ namespace FormBuilder.API.Migrations
                         .IsRequired();
 
                     b.Navigation("FilledForm");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.PersonalRegistro", b =>
+                {
+                    b.HasOne("FormBuilder.API.Models.FilledForm", "FilledForm")
+                        .WithMany()
+                        .HasForeignKey("FormID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("FilledForm");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.ProcesoEstandar", b =>
+                {
+                    b.HasOne("FormBuilder.API.Models.Template", "Template")
+                        .WithMany()
+                        .HasForeignKey("TemplateID");
+
+                    b.Navigation("Template");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.Signature", b =>

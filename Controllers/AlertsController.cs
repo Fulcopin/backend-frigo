@@ -4,6 +4,7 @@ using FormBuilder.API.Models;
 using FormBuilder.API.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace FormBuilder.API.Controllers
 {
@@ -11,6 +12,33 @@ namespace FormBuilder.API.Controllers
     [Route("api/[controller]")]
     public class AlertsController : ControllerBase
     {
+
+        /// <summary>
+        /// Detalle real de una excepción, incluida la interna.
+        ///
+        /// Los catch devolvían solo "Error al obtener configuración", que no
+        /// dice nada: para diagnosticar había que entrar al servidor a mirar la
+        /// consola. Con esto el motivo viaja en la respuesta.
+        ///
+        /// La causa de fondo suele estar en la excepción INTERNA, no en la de
+        /// arriba: "An error occurred while saving" es inútil, pero adentro dice
+        /// "Invalid object name 'dbo.AlertConfigTemplates'".
+        /// </summary>
+        private static object DetalleError(Exception ex, string contexto)
+        {
+            var causas = new List<string>();
+            for (var e = ex; e != null; e = e.InnerException)
+                causas.Add($"{e.GetType().Name}: {e.Message}");
+
+            return new
+            {
+                message = contexto,
+                detalle = string.Join(" → ", causas),
+                tipo = ex.GetType().FullName,
+            };
+        }
+
+
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
         private readonly ILogger<AlertsController> _logger;
@@ -66,7 +94,7 @@ namespace FormBuilder.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al obtener configuraciÃ³n");
-                return StatusCode(500, new { message = "Error al obtener configuraciÃ³n" });
+                return StatusCode(500, DetalleError(ex, "Error al obtener configuración"));
             }
         }
 
@@ -109,7 +137,198 @@ namespace FormBuilder.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al actualizar configuraciÃ³n");
-                return StatusCode(500, new { message = "Error al actualizar configuraciÃ³n" });
+                return StatusCode(500, DetalleError(ex, "Error al actualizar configuración"));
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  CONFIGURACIÓN POR PLANTILLA
+        // ════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// GET /api/Alerts/config-plantillas
+        ///
+        /// Todas las plantillas activas con su configuración de alertas: la
+        /// propia si tiene excepción, o la global si no. La pantalla necesita
+        /// verlas todas juntas para poder elegir varias y aplicarles lo mismo.
+        /// </summary>
+        [HttpGet("config-plantillas")]
+        public async Task<ActionResult<object>> GetConfigPlantillas()
+        {
+            try
+            {
+                var global = await _context.AlertConfigurations.FirstOrDefaultAsync()
+                             ?? new AlertConfiguration();
+
+                var excepciones = await _context.AlertConfigTemplates
+                    .AsNoTracking()
+                    .ToDictionaryAsync(x => x.TemplateID);
+
+                var plantillas = await _context.Templates
+                    .AsNoTracking()
+                    .Where(t => !t.IsObsolete)
+                    .OrderBy(t => t.Codigo)
+                    .Select(t => new { t.TemplateID, t.Codigo, t.Nombre, t.Proceso })
+                    .ToListAsync();
+
+                var items = plantillas.Select(t =>
+                {
+                    excepciones.TryGetValue(t.TemplateID, out var exc);
+                    return new
+                    {
+                        t.TemplateID,
+                        t.Codigo,
+                        t.Nombre,
+                        t.Proceso,
+                        // Se informa de dónde sale cada valor: sin esto no se
+                        // distingue una plantilla configurada a 24h de una que
+                        // simplemente hereda las 24h globales.
+                        TieneExcepcion = exc != null,
+                        EnableSignatureAlerts = exc?.EnableSignatureAlerts ?? global.EnableSignatureAlerts,
+                        SignatureAlertDelay = exc?.SignatureAlertDelay ?? global.SignatureAlertDelay,
+                        DailyCheckTime = string.IsNullOrWhiteSpace(exc?.DailyCheckTime)
+                            ? global.DailyCheckTime : exc!.DailyCheckTime,
+                        SignatureRecipients = string.IsNullOrWhiteSpace(exc?.SignatureRecipients)
+                            ? global.SignatureRecipients : exc!.SignatureRecipients,
+                        RecipientsSeSuman = exc?.RecipientsSeSuman ?? true,
+                        exc?.ActualizadoPor,
+                        exc?.ActualizadoEn,
+                    };
+                }).ToList();
+
+                return Ok(new
+                {
+                    global = new
+                    {
+                        global.EnableSignatureAlerts,
+                        global.SignatureAlertDelay,
+                        global.DailyCheckTime,
+                        global.SignatureRecipients,
+                    },
+                    plantillas = items
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al listar la configuración de alertas por plantilla");
+                return StatusCode(500, DetalleError(ex, "Error al obtener la configuración por plantilla."));
+            }
+        }
+
+        /// <summary>
+        /// PUT /api/Alerts/config-plantillas
+        ///
+        /// Aplica la MISMA configuración a varias plantillas de una vez. Es el
+        /// caso real: "estos seis formularios de cámara avisan a las 4 horas",
+        /// no configurar 57 de a uno.
+        /// </summary>
+        [HttpPut("config-plantillas")]
+        public async Task<ActionResult<object>> GuardarConfigPlantillas([FromBody] AlertConfigLoteDto dto)
+        {
+            if (dto?.TemplateIds == null || dto.TemplateIds.Count == 0)
+                return BadRequest(new { message = "No se indicó ninguna plantilla." });
+
+            if (dto.SignatureAlertDelay < 1 || dto.SignatureAlertDelay > 720)
+                return BadRequest(new { message = "El plazo debe estar entre 1 y 720 horas (30 días)." });
+
+            if (!string.IsNullOrWhiteSpace(dto.DailyCheckTime)
+                && !TimeSpan.TryParse(dto.DailyCheckTime, out _))
+                return BadRequest(new { message = $"La hora «{dto.DailyCheckTime}» no es válida. Usá el formato HH:MM." });
+
+            try
+            {
+                var ids = dto.TemplateIds.Distinct().ToList();
+
+                var existen = await _context.Templates
+                    .Where(t => ids.Contains(t.TemplateID))
+                    .Select(t => t.TemplateID)
+                    .ToListAsync();
+
+                var faltantes = ids.Except(existen).ToList();
+                if (faltantes.Count > 0)
+                    return BadRequest(new { message = "Hay plantillas que no existen.", plantillas = faltantes });
+
+                var actuales = await _context.AlertConfigTemplates
+                    .Where(x => ids.Contains(x.TemplateID))
+                    .ToListAsync();
+
+                var recipientesJson = dto.SignatureRecipients != null && dto.SignatureRecipients.Count > 0
+                    ? JsonSerializer.Serialize(dto.SignatureRecipients.Where(e => !string.IsNullOrWhiteSpace(e)))
+                    : null;
+
+                var ahora = DateTime.Now;
+                var creadas = 0;
+                var actualizadas = 0;
+
+                foreach (var id in ids)
+                {
+                    var fila = actuales.FirstOrDefault(x => x.TemplateID == id);
+                    if (fila == null)
+                    {
+                        fila = new AlertConfigTemplate { TemplateID = id, CreadoEn = ahora };
+                        _context.AlertConfigTemplates.Add(fila);
+                        creadas++;
+                    }
+                    else actualizadas++;
+
+                    fila.EnableSignatureAlerts = dto.EnableSignatureAlerts;
+                    fila.SignatureAlertDelay = dto.SignatureAlertDelay;
+                    fila.DailyCheckTime = string.IsNullOrWhiteSpace(dto.DailyCheckTime) ? null : dto.DailyCheckTime.Trim();
+                    fila.SignatureRecipients = recipientesJson;
+                    fila.RecipientsSeSuman = dto.RecipientsSeSuman;
+                    fila.ActualizadoPor = dto.ActualizadoPor;
+                    fila.ActualizadoEn = ahora;
+                }
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation(
+                    "Alertas configuradas para {N} plantilla(s) por {Quien}: {Horas}h, activas={Activas}",
+                    ids.Count, dto.ActualizadoPor ?? "?", dto.SignatureAlertDelay, dto.EnableSignatureAlerts);
+
+                return Ok(new
+                {
+                    message = $"Configuración aplicada a {ids.Count} plantilla(s).",
+                    creadas,
+                    actualizadas
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al guardar la configuración de alertas por plantilla");
+                return StatusCode(500, DetalleError(ex, "Error al guardar. No se aplicó ningún cambio."));
+            }
+        }
+
+        /// <summary>
+        /// DELETE /api/Alerts/config-plantillas
+        /// Quita la excepción y devuelve esas plantillas a la configuración global.
+        /// </summary>
+        [HttpDelete("config-plantillas")]
+        public async Task<ActionResult<object>> QuitarConfigPlantillas([FromBody] List<int> templateIds)
+        {
+            if (templateIds == null || templateIds.Count == 0)
+                return BadRequest(new { message = "No se indicó ninguna plantilla." });
+
+            try
+            {
+                var filas = await _context.AlertConfigTemplates
+                    .Where(x => templateIds.Contains(x.TemplateID))
+                    .ToListAsync();
+
+                _context.AlertConfigTemplates.RemoveRange(filas);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = $"{filas.Count} plantilla(s) volvieron a la configuración global.",
+                    quitadas = filas.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al quitar la configuración por plantilla");
+                return StatusCode(500, DetalleError(ex, "Error al quitar la configuración."));
             }
         }
 
@@ -478,4 +697,3 @@ namespace FormBuilder.API.Controllers
         }
     }
 }
-

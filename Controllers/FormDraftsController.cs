@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
@@ -14,6 +14,61 @@ namespace FormBuilder.API.Controllers
         public FormDraftsController(ApplicationDbContext context)
         {
             _context = context;
+        }
+
+        // ── BORRADORES CON SUS DATOS, PARA LOS INDICADORES EN VIVO ──────────
+        /// <summary>
+        /// Los borradores activos CON su encabezado y su cuerpo, con la misma
+        /// forma que un formulario guardado.
+        ///
+        /// Para qué: mientras el operador no cierra el registro, lo que ya
+        /// cargó no existe para nadie — el plan y los indicadores lo ven recién
+        /// cuando guarda, que puede ser al final del turno. Con esto se pueden
+        /// alimentar en vivo, avisando que son provisionales.
+        ///
+        /// No hay doble conteo: el borrador se borra cuando el formulario se
+        /// guarda de verdad (FillForm lo elimina después del POST), así que un
+        /// registro está o en borradores o en formularios, nunca en los dos.
+        ///
+        /// GET api/FormDrafts/con-datos?templateId=101&amp;dias=15
+        /// </summary>
+        [HttpGet("con-datos")]
+        public async Task<ActionResult<IEnumerable<object>>> GetDraftsConDatos(
+            [FromQuery] int? templateId = null,
+            [FromQuery] int dias = 30)
+        {
+            var desde = DateTime.Now.AddDays(-Math.Abs(dias));
+
+            var query = _context.FormDrafts
+                .AsNoTracking()
+                .Where(d => d.IsActive && d.ExpiresAt > DateTime.Now && d.UpdatedAt >= desde);
+
+            if (templateId.HasValue) query = query.Where(d => d.TemplateID == templateId.Value);
+
+            var drafts = await query
+                .OrderByDescending(d => d.UpdatedAt)
+                .Select(d => new
+                {
+                    // formID en NEGATIVO: así el borrador viaja con la misma
+                    // forma que un formulario (el front no necesita casos
+                    // especiales) y su id no se pisa con el de uno real.
+                    formID = -d.DraftID,
+                    draftID = d.DraftID,
+                    esBorrador = true,
+                    d.TemplateID,
+                    d.TemplateName,
+                    templateCodigo = d.TemplateCodigo,
+                    d.HeaderData,
+                    d.BodyData,
+                    filledBy = d.UserName,
+                    filledByEmail = d.UserEmail,
+                    d.Progress,
+                    d.CreatedAt,
+                    d.UpdatedAt,
+                })
+                .ToListAsync();
+
+            return Ok(drafts);
         }
 
         // GET: api/FormDrafts — Todos los borradores activos (para admin)
@@ -131,14 +186,34 @@ namespace FormBuilder.API.Controllers
             return Ok(draft);
         }
 
-        // DELETE: api/FormDrafts/{id} — Eliminar borrador
+        /// <summary>
+        /// DELETE: api/FormDrafts/{id} — Eliminar borrador.
+        ///
+        /// Por defecto es borrado LÓGICO (IsActive = false): si alguien elimina
+        /// un borrador a mano y se arrepiente, la fila sigue en la base y se
+        /// puede recuperar.
+        ///
+        /// Con ?definitivo=true la fila se borra de verdad. Lo usa el guardado
+        /// del formulario: una vez que el borrador se convirtió en formulario ya
+        /// no hay nada que recuperar —el contenido quedó en FilledForms— y la
+        /// fila muerta solo estorbaba: hacía crecer la tabla y contaba doble el
+        /// consumo de los códigos (el mismo código aparecía como usado en el
+        /// formulario Y en el borrador del que salió).
+        /// </summary>
         [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteDraft(int id)
+        public async Task<IActionResult> DeleteDraft(int id, [FromQuery] bool definitivo = false)
         {
             var draft = await _context.FormDrafts.FindAsync(id);
             if (draft == null)
             {
                 return NotFound();
+            }
+
+            if (definitivo)
+            {
+                _context.FormDrafts.Remove(draft);
+                await _context.SaveChangesAsync();
+                return Ok(new { message = "Borrador eliminado definitivamente" });
             }
 
             // Soft delete

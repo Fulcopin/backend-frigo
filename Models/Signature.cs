@@ -60,8 +60,20 @@ namespace FormBuilder.API.Models
         public string? Comments { get; set; }
         public string? SignerNombre { get; set; }
         public string? TargetPuesto { get; set; }
+
+        // En firma masiva cada formulario puede tener un puesto distinto para el mismo firmante.
+        // Mapa formId (como texto) → puesto exacto que debe firmarse en ese formulario.
+        // Sin esto el backend tendría que adivinar el puesto y la firma podría caer en el slot de otro.
+        public Dictionary<string, string>? TargetPuestos { get; set; }
     }
-    
+
+    // Se lanza cuando no se puede determinar con certeza qué puesto le toca firmar al firmante.
+    // Preferimos rechazar la firma antes que estamparla en el puesto de otra persona.
+    public class PuestoNoDeterminadoException : Exception
+    {
+        public PuestoNoDeterminadoException(string message) : base(message) { }
+    }
+
     public class RejectFormRequest
     {
         public int FormId { get; set; }
@@ -74,6 +86,25 @@ namespace FormBuilder.API.Models
     {
         public List<int> FormIds { get; set; } = new();
         public string UnlockedBy { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Ocultar formularios de la bandeja de pendientes de firma en masa.
+    /// Se materializa como filas en SignatureRejections con Status = "hidden":
+    /// el GET /pending ya excluye cualquier formulario con rechazo registrado,
+    /// así que ocultar no necesita tocar el formulario en sí.
+    /// </summary>
+    public class HideMultipleFormsRequest
+    {
+        public List<int> FormIds { get; set; } = new();
+        public string HiddenBy { get; set; } = string.Empty;
+        public string? Reason { get; set; }
+    }
+
+    /// <summary>Deshacer el ocultado masivo: vuelve a mostrar los formularios en pendientes.</summary>
+    public class UnhideMultipleFormsRequest
+    {
+        public List<int> FormIds { get; set; } = new();
     }
     
     public class UpdateSignatureDateRequest

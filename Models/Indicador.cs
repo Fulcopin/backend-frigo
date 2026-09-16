@@ -18,6 +18,10 @@ namespace FormBuilder.API.Models
 
         public string? CreadoPor { get; set; }
 
+        // Pestaña (Tablero) a la que pertenece el indicador.
+        // Null = indicadores creados antes de existir las pestañas; se muestran en la primera.
+        public int? TableroId { get; set; }
+
         public int Orden { get; set; } = 0;
 
         [Required]

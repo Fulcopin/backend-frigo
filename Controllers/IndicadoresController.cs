@@ -32,7 +32,7 @@ namespace FormBuilder.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al obtener indicadores");
-                return StatusCode(500, new { message = "Error al obtener indicadores" });
+                return StatusCode(500, new { message = "Error al obtener indicadores", detalle = ex.GetBaseException().Message });
             }
         }
 
@@ -57,6 +57,33 @@ namespace FormBuilder.API.Controllers
             {
                 _logger.LogError(ex, "Error al crear indicador");
                 return StatusCode(500, new { message = "Error al crear indicador" });
+            }
+        }
+
+        // PUT /api/Indicadores/{id} — edita el indicador, lo reordena o lo mueve de pestaña
+        [HttpPut("{id}")]
+        public async Task<ActionResult<Indicador>> UpdateIndicador(int id, [FromBody] Indicador cambios)
+        {
+            try
+            {
+                var ind = await _context.Indicadores.FindAsync(id);
+                if (ind == null) return NotFound();
+
+                if (string.IsNullOrWhiteSpace(cambios.ConfigJson))
+                    return BadRequest(new { message = "La configuración del indicador es requerida" });
+
+                ind.Titulo = string.IsNullOrWhiteSpace(cambios.Titulo) ? "Indicador" : cambios.Titulo;
+                ind.ConfigJson = cambios.ConfigJson;
+                ind.TableroId = cambios.TableroId;
+                ind.Orden = cambios.Orden;
+
+                await _context.SaveChangesAsync();
+                return Ok(ind);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al actualizar indicador {Id}", id);
+                return StatusCode(500, new { message = "Error al actualizar indicador" });
             }
         }
 

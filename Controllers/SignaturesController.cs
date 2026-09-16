@@ -1,4 +1,3 @@
-
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
 using FormBuilder.API.Services;
@@ -25,6 +24,58 @@ namespace FormBuilder.API.Controllers
         }
 
         // GET /api/Signatures/pending
+        /// <summary>
+        /// Fecha del formulario: la que escribió el operario en el encabezado,
+        /// no la de guardado.
+        ///
+        /// Son cosas distintas. El formulario del día 7 puede guardarse el 8, y
+        /// mostrar la de guardado confunde: en la tarjeta de firma pendiente
+        /// decía "17/7" cuando el papel decía otra cosa, y los días pendientes
+        /// salían mal contados.
+        ///
+        /// Se descartan los campos de vencimiento y versión, que también dicen
+        /// "fecha" pero no son la del registro. Si no hay ninguna, se cae a
+        /// CreatedAt, que es lo único que siempre existe.
+        /// </summary>
+        private static DateTime FechaDelEncabezado(string? headerData, DateTime respaldo)
+        {
+            if (string.IsNullOrWhiteSpace(headerData)) return respaldo;
+
+            try
+            {
+                var header = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(headerData);
+                if (header == null) return respaldo;
+
+                foreach (var (clave, valor) in header)
+                {
+                    var k = clave.ToUpperInvariant();
+                    if (!k.Contains("FECHA")) continue;
+                    if (k.Contains("VENCIM") || k.Contains("CADUC") || k.Contains("VERSION")
+                        || k.Contains("EXPIR") || k.Contains("NACIM")) continue;
+
+                    var texto = valor.ValueKind == JsonValueKind.String ? valor.GetString() : valor.ToString();
+                    if (string.IsNullOrWhiteSpace(texto)) continue;
+
+                    if (DateTime.TryParse(texto, System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var fecha))
+                        return fecha.Date;
+
+                    // dd/MM/yyyy, que es como se escribe en planta.
+                    if (DateTime.TryParseExact(texto.Trim(),
+                            new[] { "dd/MM/yyyy", "d/M/yyyy", "dd-MM-yyyy" },
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var fechaDmy))
+                        return fechaDmy.Date;
+                }
+            }
+            catch
+            {
+                // HeaderData corrupto: se usa la de guardado en vez de romper la lista.
+            }
+
+            return respaldo;
+        }
+
         [HttpGet("pending")]
         public async Task<ActionResult<IEnumerable<object>>> GetPendingForms()
         {
@@ -32,7 +83,10 @@ namespace FormBuilder.API.Controllers
             {
                 var rawForms = await _context.FilledForms
                     .Include(f => f.Template)
-                    .Where(f => !_context.SignatureRejections.Any(r => r.FilledFormId == f.FormID))
+                    // No pedir firma de registros cuya plantilla está marcada como OBSOLETA:
+                    // esas plantillas se dejan de usar y sus registros no deben aparecer como pendientes.
+                    .Where(f => !_context.SignatureRejections.Any(r => r.FilledFormId == f.FormID)
+                                && (f.Template == null || !f.Template.IsObsolete))
                     .Select(f => new
                     {
                         id = f.FormID,
@@ -42,6 +96,8 @@ namespace FormBuilder.API.Controllers
                         headerData = f.HeaderData,
                         firmasData = f.FirmasData,
                         createdDate = f.CreatedAt,
+                        // Fecha del encabezado, ya calculada en el guardado.
+                        fechaRegistro = f.FechaRegistro,
                         area = f.Template.Proceso ?? f.Template.Area ?? "N/A"
                     })
                     .ToListAsync();
@@ -56,7 +112,12 @@ namespace FormBuilder.API.Controllers
                     f.templateName,
                     f.formCode,
                     createdBy = ExtractCreatedBy(f.headerData, f.firmasData),
-                    f.createdDate,
+                    // La fecha del ENCABEZADO, que es la del papel. La de
+                    // guardado sigue viajando aparte por si hace falta.
+                    // La columna FechaRegistro cuando está; el parseo queda de
+                    // respaldo para los formularios que aún no la tengan.
+                    createdDate = f.fechaRegistro ?? FechaDelEncabezado(f.headerData, f.createdDate),
+                    fechaGuardado = f.createdDate,
                     f.area,
                     isSigned = false,
                     f.firmasData,
@@ -96,27 +157,38 @@ namespace FormBuilder.API.Controllers
                     return BadRequest(new { message = $"🔒 El registro superó el límite de {lockThreshold} horas (hábiles) desde su creación y está bloqueado. Un Administrador debe habilitarlo en Supervisión General antes de poder firmar." });
                 }
 
-                var existingSignature = await _context.Signatures
-                    .FirstOrDefaultAsync(s => s.FilledFormId == formId);
-
-                if (existingSignature != null)
+                // ⚠️ ANTES aquí se bloqueaba si existía CUALQUIER fila en la tabla Signatures para
+                // este formulario. Eso causaba dos fallas:
+                //   1) Formularios con VARIOS firmantes: apenas firmaba el primero, los demás quedaban
+                //      bloqueados con "El formulario ya esta firmado".
+                //   2) Filas huérfanas: si una firma se limpió desde Auditoría pero su fila de Signatures
+                //      no se borró (la limpieza solo la borra si coincide el email del firmante), el
+                //      formulario quedaba trabado: aparecía como pendiente pero no dejaba firmar.
+                //      (Es el caso del FOR-CC-08 reportado.)
+                // AHORA la verdad de "ya firmado" vive en FirmasData por puesto: solo se bloquea si TODOS
+                // los puestos ya tienen firma.
+                if (AllFirmasCompleted(form.FirmasData))
                 {
-                    return BadRequest(new { message = "El formulario ya esta firmado" });
+                    return BadRequest(new { message = "El formulario ya está firmado por todos los puestos." });
                 }
 
-                var signature = new Signature
-                {
-                    FilledFormId = formId,
-                    SignatureImage = request.SignatureImage,
-                    SignedBy = request.SignedBy,
-                    SignedDate = request.SignedDate,
-                    Comments = request.Comments
-                };
-
-                _context.Signatures.Add(signature);
-
-                // CLAVE: Actualizar FirmasData del formulario con la firma realizada
+                // CLAVE: Actualizar FirmasData del formulario con la firma realizada.
+                // Va primero: si no se puede determinar el puesto lanza PuestoNoDeterminadoException
+                // y el formulario no debe quedar marcado como firmado en la tabla Signatures.
                 UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre, request.TargetPuesto);
+
+                // Reutilizar la fila existente (si la hay, incluida una huérfana) en vez de acumular
+                // duplicados por cada firma.
+                var signature = await _context.Signatures.FirstOrDefaultAsync(s => s.FilledFormId == formId);
+                if (signature == null)
+                {
+                    signature = new Signature { FilledFormId = formId };
+                    _context.Signatures.Add(signature);
+                }
+                signature.SignatureImage = request.SignatureImage;
+                signature.SignedBy = request.SignedBy;
+                signature.SignedDate = request.SignedDate;
+                signature.Comments = request.Comments;
 
                 // Guardar firma y cambios al formulario ANTES de crear alertas
                 await _context.SaveChangesAsync();
@@ -145,6 +217,11 @@ namespace FormBuilder.API.Controllers
                     message = "Formulario firmado exitosamente",
                     signatureId = signature.Id
                 });
+            }
+            catch (PuestoNoDeterminadoException ex)
+            {
+                // No se pudo saber en qué puesto va la firma: se rechaza en vez de asignarla al azar.
+                return BadRequest(new { message = "⚠️ " + ex.Message });
             }
             catch (Exception ex)
             {
@@ -186,34 +263,54 @@ namespace FormBuilder.API.Controllers
                             continue;
                         }
 
-                        var existingSignature = await _context.Signatures
-                            .FirstOrDefaultAsync(s => s.FilledFormId == formId);
-
-                        if (existingSignature != null)
+                        // Ver nota en SignForm: se bloquea por FirmasData (todos los puestos firmados),
+                        // no por la existencia de una fila en Signatures, que rompía multi-firmante y
+                        // se atascaba con filas huérfanas.
+                        if (AllFirmasCompleted(form.FirmasData))
                         {
                             failedCount++;
                             continue;
                         }
 
-                        var signature = new Signature
+                        // CLAVE: Actualizar FirmasData del formulario.
+                        // Cada formulario lleva SU propio puesto: sin esto el backend adivinaba y la firma
+                        // podía terminar en el puesto de otra persona.
+                        // Va ANTES de tocar la tabla Signatures: si no se puede determinar el puesto lanza
+                        // PuestoNoDeterminadoException y el formulario no debe quedar marcado como firmado.
+                        string? puestoDeEsteForm = request.TargetPuesto;
+                        if (request.TargetPuestos != null && request.TargetPuestos.TryGetValue(formId.ToString(), out var pMapped) && !string.IsNullOrWhiteSpace(pMapped))
                         {
-                            FilledFormId = formId,
-                            SignatureImage = request.SignatureImage,
-                            SignedBy = request.SignedBy,
-                            SignedDate = request.SignedDate,
-                            Comments = request.Comments
-                        };
+                            puestoDeEsteForm = pMapped;
+                        }
+                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre, puestoDeEsteForm);
 
-                        _context.Signatures.Add(signature);
+                        var signature = await _context.Signatures.FirstOrDefaultAsync(s => s.FilledFormId == formId);
+                        if (signature == null)
+                        {
+                            signature = new Signature { FilledFormId = formId };
+                            _context.Signatures.Add(signature);
+                        }
+                        signature.SignatureImage = request.SignatureImage;
+                        signature.SignedBy = request.SignedBy;
+                        signature.SignedDate = request.SignedDate;
+                        signature.Comments = request.Comments;
 
-                        // CLAVE: Actualizar FirmasData del formulario
-                        UpdateFirmasDataWithSignature(form, request.SignatureImage, request.SignedBy, request.SignedDate, request.SignerNombre, request.TargetPuesto);
-                            await CreateSignatureAlertsForPendingSigners(form, request.SignedBy);
-                            
+                        await CreateSignatureAlertsForPendingSigners(form, request.SignedBy);
+
+                        // Sin este contador la respuesta siempre decía "0 formularios firmados"
+                        // y la notificación de resumen nunca se enviaba.
+                        signedCount++;
                         signedFormNames.Add(form.Template?.Nombre ?? $"Formulario #{formId}");
                     }
-                    catch
+                    catch (PuestoNoDeterminadoException ex)
                     {
+                        _logger.LogWarning(
+                            "Formulario {FormId} no firmado en masiva: {Motivo}", formId, ex.Message);
+                        failedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error al firmar formulario {FormId} en masiva", formId);
                         failedCount++;
                     }
                 }
@@ -289,9 +386,11 @@ namespace FormBuilder.API.Controllers
                 var todayLocal = DateTime.Today;
                 var todayUtc = DateTime.Now.Date;
 
-                // Obtener formularios sin firma en tabla Signatures y verificar si FirmasData tiene firmas completas
+                // Obtener formularios sin firma en tabla Signatures y verificar si FirmasData tiene firmas completas.
+                // Se excluyen las plantillas OBSOLETAS: sus registros no cuentan como pendientes.
                 var formsWithoutSignature = await _context.FilledForms
-                    .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID))
+                    .Where(f => !_context.Signatures.Any(s => s.FilledFormId == f.FormID)
+                                && (f.Template == null || !f.Template.IsObsolete))
                     .Select(f => f.FirmasData)
                     .ToListAsync();
 
@@ -422,6 +521,103 @@ namespace FormBuilder.API.Controllers
             {
                 _logger.LogError(ex, "Error al rechazar formulario");
                 return StatusCode(500, new { message = "Error al rechazar formulario" });
+            }
+        }
+
+        // POST /api/Signatures/hide-multiple
+        // Oculta en masa formularios de la bandeja de pendientes de firma.
+        // No borra ni rechaza el formulario: registra un SignatureRejection con
+        // Status="hidden", y GET /pending ya excluye todo formulario con rechazo.
+        // Reversible con POST /unhide-multiple.
+        [HttpPost("hide-multiple")]
+        public async Task<ActionResult> HideMultipleForms([FromBody] HideMultipleFormsRequest request)
+        {
+            try
+            {
+                if (request.FormIds == null || request.FormIds.Count == 0)
+                {
+                    return BadRequest(new { message = "No se especificaron formularios para ocultar" });
+                }
+
+                // No duplicar: los que ya tienen un rechazo/ocultado registrado se saltan.
+                var yaOcultos = await _context.SignatureRejections
+                    .Where(r => request.FormIds.Contains(r.FilledFormId))
+                    .Select(r => r.FilledFormId)
+                    .ToListAsync();
+
+                var existentes = await _context.FilledForms
+                    .Where(f => request.FormIds.Contains(f.FormID))
+                    .Select(f => f.FormID)
+                    .ToListAsync();
+
+                var aOcultar = existentes.Except(yaOcultos).ToList();
+                var ahora = DateTime.Now;
+                foreach (var formId in aOcultar)
+                {
+                    _context.SignatureRejections.Add(new SignatureRejection
+                    {
+                        FilledFormId = formId,
+                        RejectedBy = request.HiddenBy,
+                        RejectedDate = ahora,
+                        Reason = string.IsNullOrWhiteSpace(request.Reason)
+                            ? "Ocultado de pendientes de firma"
+                            : request.Reason,
+                        Status = "hidden"
+                    });
+                }
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Ocultados {Count} formularios de pendientes de firma por {HiddenBy}",
+                    aOcultar.Count, request.HiddenBy);
+
+                return Ok(new
+                {
+                    success = true,
+                    hiddenCount = aOcultar.Count,
+                    alreadyHidden = yaOcultos.Count,
+                    notFound = request.FormIds.Except(existentes).ToList(),
+                    message = $"{aOcultar.Count} formulario(s) ocultado(s) de pendientes de firma"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al ocultar formularios de pendientes");
+                return StatusCode(500, new { message = "Error al ocultar formularios" });
+            }
+        }
+
+        // POST /api/Signatures/unhide-multiple
+        // Deshace el ocultado: borra las filas Status="hidden" y los formularios
+        // vuelven a aparecer en pendientes. Los rechazos reales (Status="rejected")
+        // NO se tocan desde aquí.
+        [HttpPost("unhide-multiple")]
+        public async Task<ActionResult> UnhideMultipleForms([FromBody] UnhideMultipleFormsRequest request)
+        {
+            try
+            {
+                if (request.FormIds == null || request.FormIds.Count == 0)
+                {
+                    return BadRequest(new { message = "No se especificaron formularios para restaurar" });
+                }
+
+                var ocultos = await _context.SignatureRejections
+                    .Where(r => request.FormIds.Contains(r.FilledFormId) && r.Status == "hidden")
+                    .ToListAsync();
+
+                _context.SignatureRejections.RemoveRange(ocultos);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    restoredCount = ocultos.Count,
+                    message = $"{ocultos.Count} formulario(s) restaurado(s) a pendientes de firma"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al restaurar formularios ocultos");
+                return StatusCode(500, new { message = "Error al restaurar formularios" });
             }
         }
 
@@ -921,6 +1117,275 @@ namespace FormBuilder.API.Controllers
             {
                 _logger.LogError(ex, "Error al limpiar firmas masivamente");
                 return StatusCode(500, new { message = "Error interno al limpiar firmas" });
+            }
+        }
+
+        // POST /api/Signatures/audit-fix-signer-names
+        /// <summary>
+        /// Repara firmas históricas que quedaron guardadas con el nombre del TITULAR del puesto en vez
+        /// del de quien realmente firmó (el reemplazo).
+        ///
+        /// Identifica al firmante real por dos vías, según cómo se haya firmado:
+        ///   A) Firma masiva o individual desde Gestión de Firmas → la tabla Signatures guarda el email
+        ///      del firmante junto con la imagen exacta estampada.
+        ///   B) Firma al llenar el formulario o desde Ver Formularios → esas no pasan por la tabla
+        ///      Signatures, pero aplican la imagen guardada de una persona, así que la propia imagen
+        ///      (contrastada contra CatalogoFirmas) dice quién firmó.
+        ///
+        /// Lo que no puede identificar (firmas subidas a mano que no están en el catálogo) se reporta
+        /// en 'noVerificables' en vez de adivinarlo.
+        ///
+        /// Por seguridad NO modifica nada salvo que se envíe dryRun = false.
+        /// </summary>
+        [HttpPost("audit-fix-signer-names")]
+        public async Task<ActionResult> FixSignerNames([FromBody] FixSignerNamesRequest request)
+        {
+            try
+            {
+                var query = _context.FilledForms.Include(f => f.Template).AsQueryable();
+                if (request.FormId.HasValue && request.FormId.Value > 0)
+                    query = query.Where(f => f.FormID == request.FormId.Value);
+                if (request.TemplateId.HasValue && request.TemplateId.Value > 0)
+                    query = query.Where(f => f.TemplateID == request.TemplateId.Value);
+
+                var forms = await query.Where(f => f.FirmasData != null && f.FirmasData != "").ToListAsync();
+                var formIds = forms.Select(f => f.FormID).ToList();
+
+                var signatures = await _context.Signatures
+                    .Where(s => formIds.Contains(s.FilledFormId))
+                    .ToListAsync();
+                var sigPorForm = signatures
+                    .GroupBy(s => s.FilledFormId)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.SignedDate).First());
+
+                // El catálogo de firmas es la única fuente de nombres reales dentro de esta base
+                // (no hay tabla de usuarios local: los usuarios viven en la API externa).
+                var catalogo = await _context.CatalogoFirmas.ToListAsync();
+
+                var nombrePorCorreo = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in catalogo)
+                {
+                    if (string.IsNullOrWhiteSpace(c.Correo) || string.IsNullOrWhiteSpace(c.NombreCompleto)) continue;
+                    nombrePorCorreo[c.Correo.Trim()] = c.NombreCompleto.Trim();
+                }
+
+                // Correos que no están dados de alta en el catálogo (cuentas genéricas, usuarios que
+                // viven solo en la API externa) se pueden indicar en la petición. Tienen prioridad
+                // sobre el catálogo: es una corrección dirigida, hecha a conciencia.
+                if (request.NombrePorCorreo != null)
+                {
+                    foreach (var kv in request.NombrePorCorreo)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Key) || string.IsNullOrWhiteSpace(kv.Value)) continue;
+                        nombrePorCorreo[kv.Key.Trim()] = kv.Value.Trim();
+                    }
+                }
+
+                // Imagen de firma → persona. Solo sirve si esa imagen identifica a UNA sola persona:
+                // si dos comparten la misma URL no se puede saber quién firmó, y se marca ambigua (null)
+                // para no atribuirle la firma a la equivocada.
+                var personaPorUrlFirma = new Dictionary<string, CatalogoFirma?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in catalogo)
+                {
+                    var clave = NormalizarUrlFirma(c.FirmaImageUrl);
+                    if (clave == null || string.IsNullOrWhiteSpace(c.NombreCompleto)) continue;
+                    if (personaPorUrlFirma.TryGetValue(clave, out var yaRegistrada))
+                    {
+                        if (yaRegistrada != null && !NameEquals(yaRegistrada.NombreCompleto, c.NombreCompleto))
+                            personaPorUrlFirma[clave] = null;
+                    }
+                    else personaPorUrlFirma[clave] = c;
+                }
+
+                var corregidos = new List<object>();
+                var noVerificables = new List<object>();
+                int noVerificablesTotal = 0;
+                int firmasRevisadas = 0;
+                int modifiedCount = 0;
+
+                foreach (var form in forms)
+                {
+                    Dictionary<string, JsonElement>? dict;
+                    try
+                    {
+                        dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.FirmasData!);
+                    }
+                    catch { continue; }
+                    if (dict == null) continue;
+
+                    sigPorForm.TryGetValue(form.FormID, out var sig);
+
+                    var newDict = new Dictionary<string, object>();
+                    bool formChanged = false;
+
+                    foreach (var kvp in dict)
+                    {
+                        newDict[kvp.Key] = kvp.Value;
+                        if (kvp.Value.ValueKind != JsonValueKind.Object) continue;
+
+                        string slotBase64 = "", slotUrl = "";
+                        if (kvp.Value.TryGetProperty("firma", out var fObj) && fObj.ValueKind == JsonValueKind.Object)
+                        {
+                            if (fObj.TryGetProperty("base64", out var bp)) slotBase64 = bp.GetString() ?? "";
+                            if (fObj.TryGetProperty("url", out var up)) slotUrl = up.GetString() ?? "";
+                        }
+                        if (string.IsNullOrEmpty(slotBase64) && string.IsNullOrEmpty(slotUrl)) continue; // sin firmar
+
+                        string slotNombre = kvp.Value.TryGetProperty("nombre", out var np) ? np.GetString() ?? "" : "";
+                        string slotEmail = kvp.Value.TryGetProperty("email", out var ep) ? ep.GetString() ?? "" : "";
+
+                        string? nombreReal = null, emailReal = null, via = null;
+                        DateTime? firmadoEl = null;
+
+                        // A) Firmas hechas desde Gestión de Firmas: la tabla Signatures guarda el email
+                        //    real del firmante junto con la imagen exacta que se estampó.
+                        if (sig != null && !string.IsNullOrEmpty(sig.SignatureImage)
+                            && !string.IsNullOrWhiteSpace(sig.SignedBy) && slotBase64 == sig.SignatureImage)
+                        {
+                            emailReal = sig.SignedBy.Trim();
+                            via = "registro de firma";
+                            firmadoEl = sig.SignedDate;
+                            // Solo si el catálogo conoce ese correo tenemos un NOMBRE que escribir.
+                            // Sin él no se pone nada: dejar el email en el campo del nombre sería
+                            // reemplazar un dato legible por uno peor.
+                            if (nombrePorCorreo.TryGetValue(emailReal, out var nc)) nombreReal = nc;
+                        }
+                        // B) Firmas hechas al llenar o desde Ver Formularios: esas nunca pasan por la
+                        //    tabla Signatures, pero aplican la imagen guardada de una persona concreta,
+                        //    así que la propia imagen dice quién firmó.
+                        else if (!string.IsNullOrEmpty(slotUrl)
+                                 && NormalizarUrlFirma(slotUrl) is string clave
+                                 && personaPorUrlFirma.TryGetValue(clave, out var persona) && persona != null)
+                        {
+                            nombreReal = persona.NombreCompleto?.Trim();
+                            emailReal = !string.IsNullOrWhiteSpace(persona.Correo) ? persona.Correo.Trim() : slotEmail;
+                            via = "imagen de firma del catálogo";
+                        }
+                        // C) Firma subida a mano: no hay registro ni imagen conocida, pero el propio slot
+                        //    guarda el CORREO de la sesión que firmó (tanto al llenar el formulario como
+                        //    desde Ver Formularios se escribe siempre el del usuario conectado). Ese correo
+                        //    identifica la cuenta; si el nombre que quedó no es el de su dueño, está mal.
+                        else if (!string.IsNullOrWhiteSpace(slotEmail)
+                                 && nombrePorCorreo.TryGetValue(slotEmail.Trim(), out var nombreDelCorreo))
+                        {
+                            nombreReal = nombreDelCorreo;
+                            emailReal = slotEmail.Trim();
+                            via = "correo registrado en la firma";
+                        }
+
+                        // Acotar a un correo concreto cuando se pide una corrección dirigida.
+                        if (!string.IsNullOrWhiteSpace(request.SoloCorreo)
+                            && !NameEquals(slotEmail, request.SoloCorreo)
+                            && !NameEquals(emailReal, request.SoloCorreo))
+                        {
+                            continue;
+                        }
+
+                        firmasRevisadas++;
+
+                        // Nombre y correo se evalúan por separado: puede estar bien uno y mal el otro.
+                        // Un slot con el nombre correcto pero el correo de otra persona (o vacío) sigue
+                        // siendo un registro que atribuye mal la firma, y antes se daba por bueno.
+                        bool nombreDifiere = !string.IsNullOrWhiteSpace(nombreReal) && !NameEquals(slotNombre, nombreReal);
+                        bool emailDifiere = !string.IsNullOrWhiteSpace(emailReal) && !NameEquals(slotEmail, emailReal);
+
+                        // Sin un nombre fiable no se toca nada: corregir solo el correo dejaría el
+                        // nombre de una persona junto al correo de otra, que es el mismo defecto.
+                        if (!string.IsNullOrWhiteSpace(nombreReal) && !nombreDifiere && !emailDifiere) continue;
+
+                        if (string.IsNullOrWhiteSpace(nombreReal))
+                        {
+                            // O la firma se subió a mano y no está en el catálogo, o sí sabemos el correo
+                            // del firmante pero nadie con ese correo figura en el catálogo. En ninguno de
+                            // los dos casos hay un nombre fiable que escribir: se reporta, no se adivina.
+                            noVerificablesTotal++;
+                            if (noVerificables.Count < 50)
+                            {
+                                noVerificables.Add(new
+                                {
+                                    formId = form.FormID,
+                                    formulario = form.Template?.Nombre ?? $"#{form.FormID}",
+                                    puesto = kvp.Key,
+                                    nombreRegistrado = slotNombre,
+                                    motivo = emailReal != null
+                                        ? $"La firma es de '{emailReal}', pero ese correo no está en el catálogo de firmas, así que no se conoce su nombre."
+                                        : "No se pudo identificar al firmante: la imagen no coincide con ninguna firma del catálogo ni con un registro de firma."
+                                });
+                            }
+                            continue;
+                        }
+
+                        corregidos.Add(new
+                        {
+                            formId = form.FormID,
+                            formulario = form.Template?.Nombre ?? $"#{form.FormID}",
+                            puesto = kvp.Key,
+                            cambia = nombreDifiere && emailDifiere ? "nombre y correo"
+                                   : nombreDifiere ? "solo el nombre"
+                                   : "solo el correo",
+                            nombreActual = slotNombre,
+                            emailActual = slotEmail,
+                            nombreCorregido = nombreDifiere ? nombreReal : slotNombre,
+                            emailCorregido = emailDifiere ? emailReal : slotEmail,
+                            identificadoPor = via,
+                            firmadoEl
+                        });
+
+                        if (!request.DryRun)
+                        {
+                            // Se conserva el resto del slot tal cual (imagen, fecha, hora, proveedor):
+                            // solo cambia a quién se le atribuye la firma.
+                            var slotCorregido = new Dictionary<string, object>();
+                            foreach (var prop in kvp.Value.EnumerateObject()) slotCorregido[prop.Name] = prop.Value;
+
+                            if (nombreDifiere) slotCorregido["nombre"] = nombreReal!;
+                            if (emailDifiere) slotCorregido["email"] = emailReal!;
+
+                            // Solo cuando cambia el NOMBRE hay una persona a la que se estaba reemplazando.
+                            // Si únicamente se ajusta el correo, el firmante ya era el correcto.
+                            if (nombreDifiere && !string.IsNullOrWhiteSpace(slotNombre))
+                            {
+                                slotCorregido["esReemplazo"] = true;
+                                slotCorregido["reemplazandoA"] = slotNombre;
+                            }
+                            newDict[kvp.Key] = slotCorregido;
+                            formChanged = true;
+                        }
+                    }
+
+                    if (formChanged)
+                    {
+                        form.FirmasData = JsonSerializer.Serialize(newDict);
+                        modifiedCount++;
+                    }
+                }
+
+                if (modifiedCount > 0)
+                {
+                    await _context.SaveChangesAsync();
+                    _logger.LogWarning("audit-fix-signer-names: corregidos {Count} formulario(s)", modifiedCount);
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    dryRun = request.DryRun,
+                    message = request.DryRun
+                        ? $"SIMULACIÓN: se detectaron {corregidos.Count} firma(s) mal atribuida(s). No se modificó nada. Reenvía con dryRun=false para aplicar."
+                        : $"Se corrigieron {corregidos.Count} firma(s) en {modifiedCount} formulario(s).",
+                    formulariosRevisados = forms.Count,
+                    firmasRevisadas,
+                    totalDetectadas = corregidos.Count,
+                    modifiedCount,
+                    correcciones = corregidos,
+                    noVerificablesTotal,
+                    noVerificables
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al corregir nombres de firmantes");
+                return StatusCode(500, new { message = "Error interno al corregir nombres de firmantes" });
             }
         }
 
@@ -1491,95 +1956,94 @@ namespace FormBuilder.API.Controllers
                     }
                 }
 
-                // 🎯 PRIORIDAD 4: Buscar por coincidencia parcial en el nombre del puesto
-                if (targetPuesto == null && !string.IsNullOrEmpty(signerNombre))
-                {
-                    foreach (var kvp in firmasDict)
-                    {
-                        if (kvp.Value.ValueKind == JsonValueKind.Object)
-                        {
-                            bool yaFirmado = false;
-                            if (kvp.Value.TryGetProperty("firma", out var firmaCheck) && firmaCheck.ValueKind == JsonValueKind.Object)
-                            {
-                                if (firmaCheck.TryGetProperty("url", out var uChk) && !string.IsNullOrEmpty(uChk.GetString())) yaFirmado = true;
-                                else if (firmaCheck.TryGetProperty("base64", out var bChk) && !string.IsNullOrEmpty(bChk.GetString())) yaFirmado = true;
-                            }
-                            if (yaFirmado) continue;
-
-                            // Si el nombre del puesto contiene parte del rol o nombre
-                            if (signerNombre.Contains("Calidad", StringComparison.OrdinalIgnoreCase) && kvp.Key.Contains("Calidad", StringComparison.OrdinalIgnoreCase))
-                            {
-                                targetPuesto = kvp.Key;
-                                foundByEmailMatch = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // 🎯 FALLBACK: Si no encontramos por nada, buscar el primer puesto sin firma
+                // 🎯 ÚLTIMO RECURSO: solo si queda UN único puesto sin firmar no hay ambigüedad posible,
+                // así que la firma solo puede ir ahí.
+                //
+                // ⚠️ Antes aquí había dos "adivinanzas" que causaban firmas en el puesto equivocado:
+                //   1) Un caso especial literal: si el NOMBRE del firmante contenía "Calidad", caía en el
+                //      primer puesto que contuviera "Calidad".
+                //   2) Un fallback que escribía en el PRIMER puesto sin firmar, fuera de quien fuera, y si
+                //      todos estaban firmados sobrescribía el primero o inventaba un puesto "Aprobado por".
+                // Ambas se eliminaron: si no podemos determinar el puesto con certeza, es preferible
+                // rechazar la firma a estamparla en el lugar de otra persona.
                 if (targetPuesto == null)
                 {
+                    var puestosSinFirmar = new List<string>();
                     foreach (var kvp in firmasDict)
                     {
-                        if (kvp.Value.ValueKind == JsonValueKind.Object)
+                        if (kvp.Value.ValueKind != JsonValueKind.Object) continue;
+                        bool hasFirma = false;
+                        if (kvp.Value.TryGetProperty("firma", out var firmaObj) && firmaObj.ValueKind == JsonValueKind.Object)
                         {
-                            bool hasFirma = false;
-                            if (kvp.Value.TryGetProperty("firma", out var firmaObj) && firmaObj.ValueKind == JsonValueKind.Object)
-                            {
-                                if (firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString())) hasFirma = true;
-                                else if (firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString())) hasFirma = true;
-                            }
-
-                            if (!hasFirma)
-                            {
-                                targetPuesto = kvp.Key;
-                                break;
-                            }
+                            if (firmaObj.TryGetProperty("url", out var urlProp) && !string.IsNullOrEmpty(urlProp.GetString())) hasFirma = true;
+                            else if (firmaObj.TryGetProperty("base64", out var b64Prop) && !string.IsNullOrEmpty(b64Prop.GetString())) hasFirma = true;
                         }
+                        if (!hasFirma) puestosSinFirmar.Add(kvp.Key);
                     }
-                }
 
-                if (targetPuesto == null && firmasDict.Count > 0)
-                {
-                    targetPuesto = firmasDict.Keys.First();
+                    if (puestosSinFirmar.Count == 1)
+                    {
+                        targetPuesto = puestosSinFirmar[0];
+                        _logger.LogInformation(
+                            "Firma de '{Signer}' asignada al único puesto sin firmar '{Puesto}' en formulario {FormId}",
+                            signerNombre ?? signedBy, targetPuesto, form.FormID);
+                    }
                 }
 
                 if (targetPuesto == null)
                 {
-                    targetPuesto = "Aprobado por";
+                    _logger.LogWarning(
+                        "No se pudo determinar el puesto de '{Signer}' ({Email}) en el formulario {FormId}. Firma rechazada para no asignarla al puesto equivocado.",
+                        signerNombre ?? "(sin nombre)", signedBy, form.FormID);
+                    throw new PuestoNoDeterminadoException(
+                        $"No se pudo determinar qué puesto le corresponde firmar a '{signerNombre ?? signedBy}' en este formulario. " +
+                        "Verifica que el nombre coincida exactamente con el titular o con un reemplazo definido en la plantilla.");
                 }
 
                 var existingData = firmasDict.ContainsKey(targetPuesto) ? firmasDict[targetPuesto] : default;
 
-                string existingNombre = signedBy;
-                string existingEmail = signedBy;
+                // Datos que el slot YA tenía (el titular asignado al puesto), si los tenía.
+                string? titularSlotNombre = null;
+                string? titularSlotEmail = null;
                 string existingFecha = signedDate.ToString("yyyy-MM-dd");
                 string existingHora = signedDate.ToString("HH:mm");
 
                 if (existingData.ValueKind == JsonValueKind.Object)
                 {
-                    if (existingData.TryGetProperty("nombre", out var n) && !string.IsNullOrEmpty(n.GetString()))
-                        existingNombre = n.GetString()!;
-                    if (existingData.TryGetProperty("email", out var e) && !string.IsNullOrEmpty(e.GetString()))
-                        existingEmail = e.GetString()!;
-                    if (existingData.TryGetProperty("fecha", out var f) && !string.IsNullOrEmpty(f.GetString()))
+                    if (existingData.TryGetProperty("nombre", out var n) && !string.IsNullOrWhiteSpace(n.GetString()))
+                        titularSlotNombre = n.GetString();
+                    if (existingData.TryGetProperty("email", out var e) && !string.IsNullOrWhiteSpace(e.GetString()))
+                        titularSlotEmail = e.GetString();
+                    if (existingData.TryGetProperty("fecha", out var f) && !string.IsNullOrWhiteSpace(f.GetString()))
                         existingFecha = f.GetString()!;
                 }
 
-                string nombreMostrado = existingNombre;
-                bool esSuplente = matchedAsSuplente;
-                string nombreEncargadoOriginal = existingNombre;
+                // 🔧 FIX: el nombre y el email estampados son SIEMPRE los de quien realmente firmó.
+                // Antes se conservaba el nombre que ya traía el slot (el titular del puesto) siempre que
+                // foundByEmailMatch fuera true — y eso incluye el caso de la firma masiva, donde el
+                // frontend manda TargetPuestos y se entra por PRIORIDAD 0. Resultado: la firma aparecía
+                // con el nombre de OTRA persona (el titular) en lugar del firmante real.
+                string nombreMostrado = !string.IsNullOrWhiteSpace(signerNombre)
+                    ? signerNombre.Trim()
+                    : (titularSlotNombre ?? signedBy);
 
-                if (!foundByEmailMatch && !string.IsNullOrEmpty(signerNombre))
-                {
-                    nombreMostrado = signerNombre;
-                }
+                string emailMostrado = !string.IsNullOrWhiteSpace(signedBy)
+                    ? signedBy.Trim()
+                    : (titularSlotEmail ?? string.Empty);
+
+                // Es reemplazo si coincidió por la lista de reemplazos del template, o si quien firma
+                // no es el titular que el slot tenía asignado (ni por nombre ni por email).
+                bool esSuplente = matchedAsSuplente ||
+                    (!string.IsNullOrWhiteSpace(titularSlotNombre)
+                     && !NameEquals(titularSlotNombre, nombreMostrado)
+                     && !NameEquals(titularSlotEmail, emailMostrado));
+
+                string nombreEncargadoOriginal = titularSlotNombre ?? string.Empty;
 
                 var updatedPuesto = new Dictionary<string, object>
                 {
                     ["nombre"] = nombreMostrado,
-                    ["email"] = existingEmail,
+                    ["email"] = emailMostrado,
                     ["fecha"] = existingFecha,
                     ["hora"] = existingHora,
                     ["fechaHoraCapturada"] = true,
@@ -1618,12 +2082,39 @@ namespace FormBuilder.API.Controllers
                 }
 
                 form.FirmasData = JsonSerializer.Serialize(newFirmasDict);
-                _logger.LogInformation("FirmasData actualizado para formulario {FormId}, puesto: {Puesto}", form.FormID, targetPuesto);
+                _logger.LogInformation(
+                    "FirmasData actualizado para formulario {FormId}, puesto: {Puesto}, firmante: {Firmante} <{Email}>, puesto determinado por: {Modo}",
+                    form.FormID, targetPuesto, nombreMostrado, emailMostrado,
+                    foundByEmailMatch ? "titular/puesto explícito" : (matchedAsSuplente ? "reemplazo" : "único puesto libre"));
+            }
+            catch (PuestoNoDeterminadoException)
+            {
+                // 🔧 FIX: esta excepción debe llegar al llamador. El catch general de abajo la tragaba,
+                // así que el formulario se marcaba como firmado en la tabla Signatures mientras
+                // FirmasData quedaba intacto: la firma simplemente no aparecía en ninguna parte.
+                throw;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "No se pudo actualizar FirmasData para formulario {FormId}", form.FormID);
             }
+        }
+
+        /// <summary>
+        /// Normaliza una URL de firma para poder compararlas. Cloudinary sirve la misma imagen con
+        /// http/https, con parámetros de transformación y con un segmento de versión (/v1712345678/)
+        /// que cambia sin que cambie la imagen: comparar el texto crudo daría falsos negativos.
+        /// Devuelve null si no hay URL.
+        /// </summary>
+        private static string? NormalizarUrlFirma(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return null;
+            var u = url.Trim();
+            var q = u.IndexOf('?');
+            if (q >= 0) u = u.Substring(0, q);
+            u = u.Replace("http://", "https://", StringComparison.OrdinalIgnoreCase);
+            u = System.Text.RegularExpressions.Regex.Replace(u, @"/v\d+/", "/");
+            return u.ToLowerInvariant();
         }
 
         /// <summary>
@@ -2288,5 +2779,21 @@ namespace FormBuilder.API.Controllers
         public string? SignerNameOrEmail { get; set; }
         public int? FormId { get; set; }
         public int? TemplateId { get; set; }
+    }
+
+    public class FixSignerNamesRequest
+    {
+        public int? FormId { get; set; }
+        public int? TemplateId { get; set; }
+
+        // Por defecto SOLO simula: hay que pedir explícitamente que se apliquen los cambios.
+        public bool DryRun { get; set; } = true;
+
+        // Correo → nombre real, para firmantes que no están en el catálogo de firmas.
+        // Ej: { "tadmin@frigolab.com": "María Solís" }
+        public Dictionary<string, string>? NombrePorCorreo { get; set; }
+
+        // Limita la corrección a las firmas hechas con un correo concreto.
+        public string? SoloCorreo { get; set; }
     }
 }

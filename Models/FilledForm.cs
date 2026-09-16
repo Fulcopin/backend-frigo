@@ -53,6 +53,21 @@ namespace FormBuilder.API.Models
         public string? Observaciones { get; set; }
         
         // ✅ Hora local del servidor (NO UTC)
+        /// <summary>
+        /// Fecha del REGISTRO: la que el operario escribió en el encabezado.
+        ///
+        /// Es distinta de CreatedAt, que es cuándo se apretó Guardar. Un
+        /// formulario del día 9 puede guardarse el 10, y todos los filtros y
+        /// listados tienen que usar el 9, que es lo que dice el papel.
+        ///
+        /// Vive como columna y no solo dentro del JSON de HeaderData para que
+        /// SQL pueda filtrarla, ordenarla e indexarla: leer el JSON en cada
+        /// consulta obligaba a traer todo a memoria.
+        ///
+        /// La calcula el backend al guardar, con FechaDelHeader().
+        /// </summary>
+        public DateTime? FechaRegistro { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.Now;
         public DateTime? UpdatedAt { get; set; }
     }

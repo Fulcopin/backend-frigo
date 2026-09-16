@@ -44,6 +44,14 @@ namespace FormBuilder.API.Models
         [Column(TypeName = "decimal(18,4)")]
         public decimal PesoNeto { get; set; }
 
+        /// <summary>
+        /// Saldo disponible en Lbs (lo que queda del lote sin consumir).
+        /// Arranca igual a PesoNeto y baja cada vez que un proceso posterior lo usa.
+        /// Cuando llega a 0, el lote queda 'consumido'.
+        /// </summary>
+        [Column(TypeName = "decimal(18,4)")]
+        public decimal Saldo { get; set; }
+
         // ── Estado ────────────────────────────────────────────────────────────
         /// <summary>disponible | consumido | parcial</summary>
         [StringLength(20)]

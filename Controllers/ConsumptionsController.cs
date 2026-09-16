@@ -1,4 +1,4 @@
-using FormBuilder.API.Data;
+﻿using FormBuilder.API.Data;
 using FormBuilder.API.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -36,9 +36,12 @@ namespace FormBuilder.API.Controllers
                     .AsQueryable();
 
                 if (startDate.HasValue)
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 if (endDate.HasValue)
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
 
                 var forms = await query.OrderByDescending(f => f.CreatedAt).ToListAsync();
 
@@ -83,7 +86,9 @@ namespace FormBuilder.API.Controllers
             [FromQuery] DateTime? startDate,
             [FromQuery] DateTime? endDate,
             [FromQuery] string? templateName,
-            [FromQuery] string? area)
+            [FromQuery] string? area,
+            [FromQuery] bool incluirBorradores = false,
+            [FromQuery] DateTime? modificadoDesde = null)
         {
             try
             {
@@ -92,14 +97,26 @@ namespace FormBuilder.API.Controllers
                     .AsQueryable();
 
                 if (startDate.HasValue)
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 if (endDate.HasValue)
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 if (!string.IsNullOrEmpty(templateName))
                     query = query.Where(f => f.Template != null && f.Template.Nombre.Contains(templateName));
                 if (!string.IsNullOrEmpty(area))
                     query = query.Where(f => (f.Template != null && f.Template.Area != null && f.Template.Area.Contains(area)) || 
                                              (f.Template != null && f.Template.Proceso != null && f.Template.Proceso.Contains(area)));
+
+                // Sincronizacion incremental: la pantalla de Indicadores refresca
+                // sola cada pocos segundos, y traer el historico entero cada vez
+                // son 10 MB y 9 segundos por vuelta. Con modificadoDesde solo
+                // viajan los formularios que cambiaron desde el ultimo refresco;
+                // la pantalla los mezcla con lo que ya tenia.
+                bool parcial = modificadoDesde.HasValue;
+                if (parcial)
+                    query = query.Where(f => (f.UpdatedAt ?? f.CreatedAt) >= modificadoDesde!.Value);
 
                 var forms = await query.OrderByDescending(f => f.CreatedAt).ToListAsync();
 
@@ -115,10 +132,75 @@ namespace FormBuilder.API.Controllers
                             templateName = form.Template?.Nombre ?? "N/A",
                             templateCode = form.Template?.Codigo ?? "N/A",
                             area = form.Template?.Area ?? form.Template?.Proceso ?? "N/A",
+                            proceso = form.Template?.Proceso ?? form.Template?.Area ?? "Sin proceso",
                             filledBy = form.FilledBy ?? "N/A",
                             createdAt = form.CreatedAt,
+                            esBorrador = false,
                             totalSections = allSections.Count,
                             sections = allSections
+                        });
+                    }
+                }
+
+                // Registros que los operarios todavia tienen abiertos. Sin esto un
+                // indicador solo se mueve cuando alguien cierra el formulario, y en
+                // planta eso puede ser horas despues de haber pesado la tina.
+                // Vienen marcados con esBorrador para que la pantalla pueda avisar
+                // que ese numero todavia puede cambiar.
+                int totalBorradores = 0;
+                if (incluirBorradores)
+                {
+                    var queryBorradores = _context.FormDrafts.Where(d => d.IsActive);
+                    if (parcial)
+                        queryBorradores = queryBorradores.Where(d => d.UpdatedAt >= modificadoDesde!.Value);
+                    if (startDate.HasValue)
+                        queryBorradores = queryBorradores.Where(d => d.CreatedAt >= startDate.Value);
+                    if (endDate.HasValue)
+                        queryBorradores = queryBorradores.Where(d => d.CreatedAt <= endDate.Value);
+
+                    var borradores = await queryBorradores.OrderByDescending(d => d.UpdatedAt).ToListAsync();
+                    var plantillas = await _context.Templates.ToDictionaryAsync(t => t.TemplateID);
+
+                    foreach (var borrador in borradores)
+                    {
+                        plantillas.TryGetValue(borrador.TemplateID, out var plantilla);
+
+                        if (!string.IsNullOrEmpty(templateName) &&
+                            (plantilla?.Nombre == null || !plantilla.Nombre.Contains(templateName)))
+                            continue;
+                        if (!string.IsNullOrEmpty(area) &&
+                            !((plantilla?.Area?.Contains(area) ?? false) || (plantilla?.Proceso?.Contains(area) ?? false)))
+                            continue;
+
+                        // El extractor trabaja sobre un FilledForm: se le arma uno con
+                        // el cuerpo del borrador. No se guarda nada, es solo para leer.
+                        var comoFormulario = new FilledForm
+                        {
+                            FormID = -borrador.DraftID,
+                            TemplateID = borrador.TemplateID,
+                            BodyData = borrador.BodyData,
+                            HeaderData = borrador.HeaderData,
+                            FilledBy = borrador.UserName,
+                            CreatedAt = borrador.CreatedAt,
+                            Template = plantilla
+                        };
+
+                        var seccionesBorrador = ExtractAllSectionsFromForm(comoFormulario);
+                        if (!seccionesBorrador.Any()) continue;
+
+                        totalBorradores++;
+                        result.Add(new
+                        {
+                            formID = -borrador.DraftID,
+                            templateName = plantilla?.Nombre ?? borrador.TemplateName ?? "N/A",
+                            templateCode = plantilla?.Codigo ?? borrador.TemplateCodigo ?? "N/A",
+                            area = plantilla?.Area ?? plantilla?.Proceso ?? "N/A",
+                            proceso = plantilla?.Proceso ?? plantilla?.Area ?? "Sin proceso",
+                            filledBy = borrador.UserName ?? "N/A",
+                            createdAt = borrador.CreatedAt,
+                            esBorrador = true,
+                            totalSections = seccionesBorrador.Count,
+                            sections = seccionesBorrador
                         });
                     }
                 }
@@ -133,9 +215,31 @@ namespace FormBuilder.API.Controllers
                     })
                     .ToList();
 
+                // Los borradores desaparecen cuando el operario cierra el
+                // formulario. En un refresco parcial la pantalla no se enteraria
+                // y seguiria sumando un registro que ya no existe, ahora ademas
+                // duplicado con el formulario cerrado. Se manda la lista de los
+                // que siguen abiertos —solo los ids, es barato— para que la
+                // pantalla borre los que ya no estan.
+                List<int>? borradoresActivos = null;
+                if (incluirBorradores)
+                {
+                    borradoresActivos = await _context.FormDrafts
+                        .Where(d => d.IsActive)
+                        .Select(d => -d.DraftID)
+                        .ToListAsync();
+                }
+
                 return Ok(new
                 {
                     totalForms = result.Count,
+                    totalBorradores = totalBorradores,
+                    // Reloj del SERVIDOR: la pantalla lo devuelve tal cual en el
+                    // proximo modificadoDesde. Si usara el reloj del navegador,
+                    // unos segundos de diferencia se comerian formularios.
+                    serverTime = DateTime.Now,
+                    parcial = parcial,
+                    borradoresActivos = borradoresActivos,
                     templateSummary = templateSummary,
                     forms = result
                 });
@@ -164,12 +268,15 @@ namespace FormBuilder.API.Controllers
 
                 if (startDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 }
 
                 if (endDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 }
 
                 var forms = await query.ToListAsync();
@@ -237,12 +344,15 @@ namespace FormBuilder.API.Controllers
 
                 if (startDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 }
 
                 if (endDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 }
 
                 var forms = await query.ToListAsync();
@@ -283,12 +393,15 @@ namespace FormBuilder.API.Controllers
 
                 if (startDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 }
 
                 if (endDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 }
 
                 var forms = await query.ToListAsync();
@@ -401,12 +514,15 @@ namespace FormBuilder.API.Controllers
 
                 if (startDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 }
 
                 if (endDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 }
 
                 var forms = await query.ToListAsync();
@@ -451,12 +567,15 @@ namespace FormBuilder.API.Controllers
 
                 if (startDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt >= startDate.Value);
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // filtra por lo que dice el papel. Respaldo por CreatedAt
+                    // para los formularios que aún no tengan la columna.
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) >= startDate.Value.Date);
                 }
 
                 if (endDate.HasValue)
                 {
-                    query = query.Where(f => f.CreatedAt <= endDate.Value);
+                    query = query.Where(f => (f.FechaRegistro ?? f.CreatedAt.Date) <= endDate.Value.Date);
                 }
 
                 var forms = await query.ToListAsync();

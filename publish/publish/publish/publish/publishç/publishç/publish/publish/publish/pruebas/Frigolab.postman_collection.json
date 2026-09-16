@@ -1,0 +1,753 @@
+{
+  "info": {
+    "name": "Frigolab · Inventario, Trazabilidad e Indicadores",
+    "description": "Pruebas de los tres arreglos:\n\n1. **Lotes** — varios PD-04 con el mismo número de lote SUMAN en vez de descartarse, y volver a guardar el mismo formulario no cuenta dos veces.\n2. **Trazabilidad** — la fecha que se busca y se muestra es la que escribió el operario en el encabezado, no la de guardado.\n3. **Indicadores** — incluyen lo que se está llenando (borradores) y refrescan trayendo solo lo que cambió.\n\n### Cómo usarla\n\n1. Importar este archivo en Postman.\n2. Elegir el entorno: la variable `baseUrl` viene apuntando al servidor de planta.\n3. Correr la colección entera con el **Runner** (Run collection). Cada pedido trae sus verificaciones: al final se ve cuántas pasaron.\n\nLa carpeta de lotes crea un lote de prueba con nombre único (`TEST-<timestamp>`) y lo borra al final, junto con sus movimientos. No toca datos reales.\n\nEl contrato de la API también está en `{{baseUrl}}/../openapi/v1.json`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://100.74.186.82:8096/api",
+      "description": "Servidor de planta. Para probar local: http://localhost:5099/api"
+    },
+    {
+      "key": "lote",
+      "value": ""
+    },
+    {
+      "key": "formA",
+      "value": ""
+    },
+    {
+      "key": "formB",
+      "value": ""
+    },
+    {
+      "key": "loteReal",
+      "value": ""
+    },
+    {
+      "key": "serverTime",
+      "value": ""
+    },
+    {
+      "key": "pesoCompleto",
+      "value": ""
+    },
+    {
+      "key": "desde",
+      "value": "",
+      "description": "Opcional: fecha desde (YYYY-MM-DD) para la trazabilidad. Vacío = últimos 60 días."
+    },
+    {
+      "key": "hasta",
+      "value": "",
+      "description": "Opcional: fecha hasta (YYYY-MM-DD, exclusiva)."
+    },
+    {
+      "key": "loteHijo",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1 · Lotes: varios formularios al mismo lote",
+      "item": [
+        {
+          "name": "1.1 Primer formulario crea el lote (1000 bruto − 300 desp. = 700 neto)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Numero de lote unico por corrida: asi la prueba se puede repetir",
+                  "// sin chocar con la corrida anterior.",
+                  "const sello = Date.now();",
+                  "pm.collectionVariables.set('lote', 'TEST-' + sello);",
+                  "pm.collectionVariables.set('formA', 900000 + (sello % 10000));",
+                  "pm.collectionVariables.set('formB', 910000 + (sello % 10000));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('creó 1 lote nuevo', () => pm.expect(j.creados).to.eql(1));",
+                  "pm.test('no sumó a ninguno existente', () => pm.expect(j.sumados).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{lote}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Swordfish\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 1000,\n      \"desperdicio\": 300,\n      \"tipoDesperdicio\": \"Diferencia proceso\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": null,\n      \"formId\": {{formA}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba automatica - primer formulario\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.2 El lote quedó con 700 lb",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const l = pm.response.json();",
+                  "pm.test('peso bruto = 1000', () => pm.expect(Number(l.pesoEntrada)).to.eql(1000));",
+                  "pm.test('desperdicio = 300', () => pm.expect(Number(l.desperdicio)).to.eql(300));",
+                  "pm.test('peso neto = 700', () => pm.expect(Number(l.pesoNeto)).to.eql(700));",
+                  "pm.test('saldo = 700', () => pm.expect(Number(l.saldo)).to.eql(700));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/numero/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "numero",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.3 Segundo formulario, MISMO lote (500 bruto − 100 desp.)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('NO creó un lote nuevo', () => pm.expect(j.creados).to.eql(0));",
+                  "pm.test('sumó al lote que ya existía  ← el arreglo', () => pm.expect(j.sumados).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{lote}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Blue Marlin\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 500,\n      \"desperdicio\": 100,\n      \"tipoDesperdicio\": \"Diferencia proceso\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": null,\n      \"formId\": {{formB}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba automatica - segundo formulario\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.4 El lote acumuló: 1500 bruto, 1100 neto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const l = pm.response.json();",
+                  "pm.test('peso bruto = 1500 (1000 + 500)', () => pm.expect(Number(l.pesoEntrada)).to.eql(1500));",
+                  "pm.test('desperdicio = 400 (300 + 100)', () => pm.expect(Number(l.desperdicio)).to.eql(400));",
+                  "pm.test('peso neto = 1100', () => pm.expect(Number(l.pesoNeto)).to.eql(1100));",
+                  "pm.test('saldo = 1100', () => pm.expect(Number(l.saldo)).to.eql(1100));",
+                  "pm.test('la especie del segundo aporte quedó anotada', () => pm.expect(String(l.notas)).to.include('Blue Marlin'));",
+                  "pm.collectionVariables.set('pesoCompleto', String(l.pesoEntrada));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/numero/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "numero",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.5 Se re-guarda el MISMO formulario (edición) — no debe sumar",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('no creó nada', () => pm.expect(j.creados).to.eql(0));",
+                  "pm.test('no volvió a sumar  ← idempotencia', () => pm.expect(j.sumados).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{lote}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Blue Marlin\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 500,\n      \"desperdicio\": 100,\n      \"tipoDesperdicio\": \"Diferencia proceso\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": null,\n      \"formId\": {{formB}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba automatica - segundo formulario re-guardado\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.6 El lote sigue igual (no se duplicó)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const l = pm.response.json();",
+                  "pm.test('sigue en 1500 bruto, no en 2000', () => pm.expect(Number(l.pesoEntrada)).to.eql(Number(pm.collectionVariables.get('pesoCompleto'))));",
+                  "pm.test('sigue en 1100 neto', () => pm.expect(Number(l.pesoNeto)).to.eql(1100));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/numero/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "numero",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.7 El kardex tiene las dos entradas con el saldo corrido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "const m = j.$values || j;",
+                  "pm.test('hay 2 movimientos', () => pm.expect(m.length).to.eql(2));",
+                  "pm.test('los dos son entradas', () => pm.expect(m.every(x => x.tipo === 'entrada')).to.be.true);",
+                  "pm.test('primera entrada: 700, saldo 700', () => { pm.expect(Number(m[0].cantidad)).to.eql(700); pm.expect(Number(m[0].saldoResultante)).to.eql(700); });",
+                  "pm.test('segunda entrada: 400, saldo 1100', () => { pm.expect(Number(m[1].cantidad)).to.eql(400); pm.expect(Number(m[1].saldoResultante)).to.eql(1100); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/movimientos/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "movimientos",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.8 Limpieza: borrar el lote de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('borrado (204)', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/numero/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "numero",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.9 Limpieza: el kardex del lote quedó vacío",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "const m = j.$values || j;",
+                  "pm.test('no quedaron movimientos sueltos', () => pm.expect(m.length).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/movimientos/{{lote}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "movimientos",
+                "{{lote}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.10 Lote hijo -P01 con un producto",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// El sufijo -P01 lo numera la POSICION de la fila dentro del formulario, no",
+                  "// el producto: dos formularios del mismo lote generan el mismo numero para",
+                  "// productos distintos. Esta prueba verifica que no se mezclen.",
+                  "const sello = Date.now();",
+                  "pm.collectionVariables.set('lote', 'TEST-' + sello);",
+                  "pm.collectionVariables.set('loteHijo', 'TEST-' + sello + '-P01');",
+                  "pm.collectionVariables.set('formA', 920000 + (sello % 10000));",
+                  "pm.collectionVariables.set('formB', 930000 + (sello % 10000));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('creó el lote hijo', () => pm.expect(j.creados).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{loteHijo}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Mahi filete cp 3-4\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 200,\n      \"desperdicio\": 0,\n      \"tipoDesperdicio\": \"\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": \"{{lote}}\",\n      \"formId\": {{formA}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba lote hijo\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.11 Otro formulario, MISMO -P01, producto DISTINTO",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('NO mezcló los dos productos  ← protección', () => pm.expect(j.sumados).to.eql(0));",
+                  "pm.test('avisa del conflicto en vez de callarlo', () => pm.expect(j.conflictos).to.eql(1));",
+                  "// .NET envuelve las listas en { $values: [...] } (ReferenceHandler.Preserve).",
+                  "const detalle = (j.detalleConflictos && j.detalleConflictos.$values) || j.detalleConflictos || [];",
+                  "pm.test('el aviso dice qué producto chocó', () => {",
+                  "  pm.expect(detalle.length).to.eql(1);",
+                  "  pm.expect(String(detalle[0].productoGuardado)).to.include('Mahi');",
+                  "  pm.expect(String(detalle[0].productoNuevo)).to.include('Swordfish');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{loteHijo}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Swordfish Loin\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 200,\n      \"desperdicio\": 0,\n      \"tipoDesperdicio\": \"\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": \"{{lote}}\",\n      \"formId\": {{formB}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba lote hijo\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.12 El mismo producto SÍ suma",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('mismo producto: acumula', () => pm.expect(j.sumados).to.eql(1));",
+                  "pm.test('sin conflictos', () => pm.expect(j.conflictos).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/bulk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "bulk"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lotes\": [\n    {\n      \"numeroLote\": \"{{loteHijo}}\",\n      \"proceso\": \"CONTROL DE PRODUCCIÓN PARA FILETEO\",\n      \"producto\": \"Mahi filete cp 3-4\",\n      \"clasificacion\": \"\",\n      \"pesoEntrada\": 200,\n      \"desperdicio\": 0,\n      \"tipoDesperdicio\": \"\",\n      \"estado\": \"disponible\",\n      \"lotePadre\": \"{{lote}}\",\n      \"formId\": {{formB}},\n      \"templateId\": \"101\",\n      \"fecha\": \"2026-08-30\",\n      \"notas\": \"prueba lote hijo\"\n    }\n  ],\n  \"loteOrigenConsumir\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "1.13 Limpieza: borrar el lote hijo de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('borrado (204)', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/LotesInventario/numero/{{loteHijo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "LotesInventario",
+                "numero",
+                "{{loteHijo}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · Trazabilidad con la fecha del formulario",
+      "item": [
+        {
+          "name": "2.1 Lotes de los últimos 60 días",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Si la base que se esta probando no tiene datos recientes (una copia de",
+                  "// desarrollo, por ejemplo), se le pasa un rango con las variables",
+                  "// `desde` y `hasta`. Vacias = los ultimos 60 dias.",
+                  "const desde = pm.variables.get('desde');",
+                  "const hasta = pm.variables.get('hasta');",
+                  "if (desde) pm.request.url.addQueryParams(['from=' + desde]);",
+                  "if (hasta) pm.request.url.addQueryParams(['to=' + hasta]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "const lotes = (j.lotes && j.lotes.$values) || j.lotes || [];",
+                  "pm.test('devuelve lotes (si falla, la base no tiene datos en el rango: usar las variables desde/hasta)', () => pm.expect(lotes.length).to.be.above(0));",
+                  "if (lotes.length === 0) { console.log('Sin lotes en el rango. Poner las variables desde/hasta, ej: desde=2026-04-01 hasta=2026-06-01'); return; }",
+                  "pm.test('cada lote trae primera y última fecha', () => {",
+                  "  pm.expect(lotes.every(l => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(l.first_date)))).to.be.true;",
+                  "  pm.expect(lotes.every(l => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(l.last_date)))).to.be.true;",
+                  "});",
+                  "// Se guarda uno real para el siguiente pedido: asi la prueba sirve en",
+                  "// cualquier servidor sin tener que escribir un numero de lote a mano.",
+                  "const conVarios = lotes.find(l => Number(l.count) > 1) || lotes[0];",
+                  "pm.collectionVariables.set('loteReal', String(conVarios.lote));",
+                  "console.log('Lote elegido para el detalle: ' + conVarios.lote + ' (' + conVarios.count + ' formularios)');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Traceability/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "Traceability",
+                "lotes"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.2 Detalle: cada paso trae la fecha que escribió el operario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const hayLote = !!pm.collectionVariables.get('loteReal');",
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "if (!hayLote) { console.log('Se saltea: el pedido anterior no encontro ningun lote.'); return; }",
+                  "const j = pm.response.json();",
+                  "const pasos = (j.pasos && j.pasos.$values) || j.pasos || [];",
+                  "pm.test('el lote tiene pasos', () => pm.expect(pasos.length).to.be.above(0));",
+                  "pm.test('todos traen fecha_registro  ← el arreglo', () => {",
+                  "  pm.expect(pasos.every(p => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(p.fecha_registro)))).to.be.true;",
+                  "});",
+                  "pm.test('created_at se conserva como sello de auditoría', () => {",
+                  "  pm.expect(pasos.every(p => !!p.created_at)).to.be.true;",
+                  "});",
+                  "const distintos = pasos.filter(p => String(p.fecha_registro) !== String(p.created_at).slice(0, 10));",
+                  "console.log('Pasos con fecha de operario distinta a la de guardado: ' + distintos.length + ' de ' + pasos.length);",
+                  "distintos.forEach(p => console.log('   form ' + p.form_id + ' · ' + p.template_codigo + ' · escribió ' + p.fecha_registro + ' · se guardó ' + String(p.created_at).slice(0, 10)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Traceability/lote/{{loteReal}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "Traceability",
+                "lote",
+                "{{loteReal}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · Indicadores en vivo",
+      "item": [
+        {
+          "name": "3.1 Carga completa, con lo que se está llenando",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('no es una respuesta parcial', () => pm.expect(j.parcial).to.eql(false));",
+                  "pm.test('trae el reloj del servidor  ← corte del próximo refresco', () => pm.expect(j.serverTime).to.be.a('string'));",
+                  "pm.test('informa cuántos registros están sin cerrar', () => pm.expect(j.totalBorradores).to.be.a('number'));",
+                  "pm.test('trae la lista de borradores abiertos', () => {",
+                  "  const b = (j.borradoresActivos && j.borradoresActivos.$values) || j.borradoresActivos;",
+                  "  pm.expect(b).to.be.an('array');",
+                  "});",
+                  "pm.collectionVariables.set('serverTime', j.serverTime);",
+                  "console.log('Formularios: ' + j.totalForms + ' · sin cerrar: ' + j.totalBorradores);",
+                  "console.log('Tamaño de la carga completa: ' + Math.round(pm.response.responseSize / 1024) + ' KB en ' + pm.response.responseTime + ' ms');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Consumptions/all-sections-data?startDate=2026-08-01&incluirBorradores=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "Consumptions",
+                "all-sections-data"
+              ],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "2026-08-01"
+                },
+                {
+                  "key": "incluirBorradores",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.2 Refresco incremental: solo lo que cambió",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('es una respuesta parcial  ← el arreglo', () => pm.expect(j.parcial).to.eql(true));",
+                  "pm.test('sigue diciendo qué borradores están abiertos', () => {",
+                  "  const b = (j.borradoresActivos && j.borradoresActivos.$values) || j.borradoresActivos;",
+                  "  pm.expect(b).to.be.an('array');",
+                  "});",
+                  "pm.test('la carga es chica (menos de 200 KB)', () => pm.expect(pm.response.responseSize).to.be.below(200 * 1024));",
+                  "console.log('Refresco incremental: ' + Math.round(pm.response.responseSize / 1024) + ' KB en ' + pm.response.responseTime + ' ms · ' + j.totalForms + ' formularios cambiaron');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Consumptions/all-sections-data?startDate=2026-08-01&incluirBorradores=true&modificadoDesde={{serverTime}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "Consumptions",
+                "all-sections-data"
+              ],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "2026-08-01"
+                },
+                {
+                  "key": "incluirBorradores",
+                  "value": "true"
+                },
+                {
+                  "key": "modificadoDesde",
+                  "value": "{{serverTime}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

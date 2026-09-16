@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
@@ -30,7 +30,7 @@ namespace FormBuilder.API.Controllers
         {
             var forms = await _context.FilledForms
                                  .Include(f => f.Template)
-                                 .OrderByDescending(f => f.CreatedAt)
+                                 .OrderByDescending(f => f.FechaRegistro).ThenByDescending(f => f.CreatedAt)
                                  .ToListAsync();
             
             // Mapear a objeto anónimo con el nombre del template y datos de auditoría
@@ -67,7 +67,7 @@ namespace FormBuilder.API.Controllers
         {
             var forms = await _context.FilledForms
                                  .Include(f => f.Template)
-                                 .OrderByDescending(f => f.CreatedAt)
+                                 .OrderByDescending(f => f.FechaRegistro).ThenByDescending(f => f.CreatedAt)
                                  .Take(100)
                                  .Select(f => new
                                  {
@@ -82,6 +82,278 @@ namespace FormBuilder.API.Controllers
                                  .ToListAsync();
             
             return Ok(forms);
+        }
+
+        /// <summary>
+        /// Busca registros para poder saltar de uno a otro mientras se edita.
+        ///
+        /// Antes la pantalla de edición se bajaba TODOS los formularios con su HeaderData,
+        /// BodyData y FirmasData completos solo para poder filtrar por código en el navegador:
+        /// con la cantidad de registros que ya hay, eso tarda muchísimo o directamente no
+        /// termina, y el buscador quedaba inservible. Acá se filtra en la base y se devuelve
+        /// lo justo para mostrar la lista.
+        ///
+        /// Busca por código y nombre de la plantilla, por quién lo llenó y por lote.
+        /// </summary>
+        [HttpGet("buscar")]
+        public async Task<ActionResult<IEnumerable<object>>> BuscarFilledForms(
+            [FromQuery] string? q = null,
+            [FromQuery] int? templateId = null,
+            [FromQuery] int limite = 50)
+        {
+            try
+            {
+                if (limite <= 0 || limite > 200) limite = 50;
+
+                var query = _context.FilledForms
+                    .Include(f => f.Template)
+                    .AsNoTracking()
+                    .AsQueryable();
+
+                if (templateId.HasValue && templateId.Value > 0)
+                    query = query.Where(f => f.TemplateID == templateId.Value);
+
+                if (!string.IsNullOrWhiteSpace(q))
+                {
+                    var texto = q.Trim();
+                    query = query.Where(f =>
+                        (f.Template != null && f.Template.Codigo.Contains(texto)) ||
+                        (f.Template != null && f.Template.Nombre.Contains(texto)) ||
+                        (f.FilledBy != null && f.FilledBy.Contains(texto)) ||
+                        // El lote y la fecha del operario viven dentro del encabezado
+                        (f.HeaderData != null && f.HeaderData.Contains(texto)));
+                }
+
+                var forms = await query
+                    .OrderByDescending(f => f.FechaRegistro).ThenByDescending(f => f.CreatedAt)
+                    .Take(limite)
+                    .Select(f => new
+                    {
+                        f.FormID,
+                        f.TemplateID,
+                        Codigo = f.Template != null ? f.Template.Codigo : "N/A",
+                        TemplateName = f.Template != null ? f.Template.Nombre : "Sin nombre",
+                        f.FilledBy,
+                        f.CreatedAt,
+                        f.FechaRegistro,
+                        f.UpdatedAt,
+                        f.HeaderData,   // solo para sacar el lote; se descarta en el cliente
+                    })
+                    .ToListAsync();
+
+                // El lote se saca acá para no mandar el encabezado entero al navegador
+                var result = forms.Select(f => new
+                {
+                    f.FormID,
+                    f.TemplateID,
+                    f.Codigo,
+                    f.TemplateName,
+                    f.FilledBy,
+                    f.CreatedAt,
+                    f.UpdatedAt,
+                    Lote = ExtraerLote(f.HeaderData),
+                });
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al buscar formularios");
+                return StatusCode(500, new { message = "Error al buscar formularios" });
+            }
+        }
+
+        /// <summary>
+        /// Primer campo del encabezado que se llame "lote" y traiga algo. Sirve para
+        /// distinguir dos registros de la misma plantilla en la lista de búsqueda.
+        /// </summary>
+        private static string? ExtraerLote(string? headerData)
+        {
+            if (string.IsNullOrWhiteSpace(headerData)) return null;
+
+            try
+            {
+                var header = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(headerData);
+                if (header == null) return null;
+
+                foreach (var kvp in header)
+                {
+                    if (kvp.Key.IndexOf("lote", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (kvp.Value.ValueKind != JsonValueKind.String) continue;
+
+                    var valor = kvp.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(valor)) return valor.Trim();
+                }
+            }
+            catch (JsonException)
+            {
+                // Encabezado ilegible: la lista se muestra igual, solo sin el lote.
+            }
+
+            return null;
+        }
+
+        // ── ¿ESTE CÓDIGO YA SE USÓ EN OTRO FORMULARIO? ──────────────────────
+        /// <summary>
+        /// Dice cuáles de los códigos enviados ya están en OTRO formulario del
+        /// mismo tipo, mirando tanto los guardados como los BORRADORES.
+        ///
+        /// El bloqueo que había en el navegador solo comparaba contra el
+        /// formulario abierto y contra el "usado" de la API externa. Como los
+        /// borradores no marcan nada en esa API, dos personas (o la misma en
+        /// dos pestañas) podían meter el mismo código de materia prima y recién
+        /// se descubría al revisar los reportes: pasó el 24/08 con el código
+        /// A26235-002-066, que quedó en el PD-04 de Blue Marlin y en el de
+        /// Swordfish. Este endpoint es la fuente de verdad que faltaba.
+        ///
+        /// GET api/FilledForms/codigos-en-uso?codigos=A26235-002-066,A26236-001-112
+        ///     &amp;templateId=101&amp;excluirFormId=1776&amp;excluirDraftId=12&amp;dias=60
+        /// </summary>
+        [HttpGet("codigos-en-uso")]
+        public async Task<ActionResult<object>> GetCodigosEnUso(
+            [FromQuery] string? codigos,
+            [FromQuery] int? templateId = null,
+            [FromQuery] int? excluirFormId = null,
+            [FromQuery] int? excluirDraftId = null,
+            [FromQuery] int dias = 60)
+        {
+            var buscados = (codigos ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(500)
+                .ToList();
+
+            if (buscados.Count == 0) return Ok(new { usados = Array.Empty<object>() });
+
+            try
+            {
+                // La ventana de fechas acota el trabajo sin perder el caso real:
+                // el choque siempre es entre formularios de estos días.
+                var desde = DateTime.Now.AddDays(-Math.Abs(dias));
+                var indice = new HashSet<string>(buscados, StringComparer.OrdinalIgnoreCase);
+                var usados = new List<object>();
+
+                var formsQuery = _context.FilledForms.AsNoTracking().Where(f => f.CreatedAt >= desde);
+                if (templateId.HasValue) formsQuery = formsQuery.Where(f => f.TemplateID == templateId.Value);
+                if (excluirFormId.HasValue) formsQuery = formsQuery.Where(f => f.FormID != excluirFormId.Value);
+
+                var forms = await formsQuery
+                    .Select(f => new { f.FormID, f.TemplateID, f.HeaderData, f.BodyData, f.FilledBy, f.CreatedAt })
+                    .ToListAsync();
+
+                foreach (var f in forms)
+                {
+                    foreach (var cod in CodigosDelCuerpo(f.BodyData, indice))
+                    {
+                        var (especie, lote) = EspecieYLote(f.HeaderData);
+                        usados.Add(new
+                        {
+                            codigo = cod, origen = "formulario", id = f.FormID,
+                            templateId = f.TemplateID, especie, lote,
+                            usuario = f.FilledBy, fecha = f.CreatedAt,
+                        });
+                    }
+                }
+
+                // Solo borradores VIVOS. Al guardar un borrador como formulario, la
+                // fila del borrador no se borra: queda con IsActive = false (borrado
+                // lógico). Sin este filtro el mismo código se informaba dos veces —
+                // una como "formulario" y otra como "borrador" del que salió— y el
+                // consumo quedaba duplicado. Los vencidos (7 días) tampoco cuentan:
+                // ya no los puede retomar nadie.
+                var draftsQuery = _context.FormDrafts.AsNoTracking()
+                    .Where(d => d.CreatedAt >= desde && d.IsActive && d.ExpiresAt > DateTime.Now);
+                if (templateId.HasValue) draftsQuery = draftsQuery.Where(d => d.TemplateID == templateId.Value);
+                if (excluirDraftId.HasValue) draftsQuery = draftsQuery.Where(d => d.DraftID != excluirDraftId.Value);
+
+                var drafts = await draftsQuery
+                    .Select(d => new { d.DraftID, d.TemplateID, d.HeaderData, d.BodyData, d.UserName, d.CreatedAt })
+                    .ToListAsync();
+
+                foreach (var d in drafts)
+                {
+                    foreach (var cod in CodigosDelCuerpo(d.BodyData, indice))
+                    {
+                        var (especie, lote) = EspecieYLote(d.HeaderData);
+                        usados.Add(new
+                        {
+                            codigo = cod, origen = "borrador", id = d.DraftID,
+                            templateId = d.TemplateID, especie, lote,
+                            usuario = d.UserName, fecha = d.CreatedAt,
+                        });
+                    }
+                }
+
+                return Ok(new { usados, revisados = forms.Count + drafts.Count });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error buscando códigos en uso");
+                // Que falle esta consulta no puede impedir guardar: el front lo
+                // toma como "no se pudo verificar" y sigue.
+                return StatusCode(500, new { message = "No se pudieron verificar los códigos" });
+            }
+        }
+
+        /// <summary>
+        /// Los códigos buscados que aparecen en el cuerpo de un formulario.
+        /// Se recorren TODOS los valores del JSON (los códigos viven en
+        /// columnas distintas según la plantilla) y se cruzan contra el índice.
+        /// </summary>
+        private static IEnumerable<string> CodigosDelCuerpo(string? bodyData, HashSet<string> buscados)
+        {
+            if (string.IsNullOrWhiteSpace(bodyData)) yield break;
+
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(bodyData); }
+            catch { yield break; }   // cuerpo ilegible: no se opina
+
+            var encontrados = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (doc)
+            {
+                var pila = new Stack<JsonElement>();
+                pila.Push(doc.RootElement);
+                while (pila.Count > 0)
+                {
+                    var el = pila.Pop();
+                    switch (el.ValueKind)
+                    {
+                        case JsonValueKind.Object:
+                            foreach (var prop in el.EnumerateObject()) pila.Push(prop.Value);
+                            break;
+                        case JsonValueKind.Array:
+                            foreach (var item in el.EnumerateArray()) pila.Push(item);
+                            break;
+                        case JsonValueKind.String:
+                            var v = el.GetString()?.Trim();
+                            if (!string.IsNullOrEmpty(v) && buscados.Contains(v)) encontrados.Add(v);
+                            break;
+                    }
+                }
+            }
+
+            foreach (var c in encontrados) yield return c;
+        }
+
+        /// <summary>Especie y lote del encabezado, para que el aviso diga dónde está el código.</summary>
+        private static (string? especie, string? lote) EspecieYLote(string? headerData)
+        {
+            if (string.IsNullOrWhiteSpace(headerData)) return (null, null);
+            try
+            {
+                using var doc = JsonDocument.Parse(headerData);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) return (null, null);
+                string? especie = null, lote = null;
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind != JsonValueKind.String) continue;
+                    var nombre = prop.Name.Trim().ToLowerInvariant();
+                    if (nombre.StartsWith("especie")) especie = prop.Value.GetString();
+                    else if (nombre.StartsWith("lote")) lote = prop.Value.GetString();
+                }
+                return (especie, lote);
+            }
+            catch { return (null, null); }
         }
 
         // 🆕 NUEVO ENDPOINT: Obtener datos simples y parseados para importación
@@ -179,12 +451,108 @@ namespace FormBuilder.API.Controllers
             Console.WriteLine($"📤 Retornando datos simples para FormID={id}");
             return Ok(response);
         }
+        /// <summary>
+        /// GET: api/FilledForms/lista
+        ///
+        /// Listado liviano para la pantalla "Ver Formularios": trae todo lo que
+        /// la lista necesita para pintarse y filtrar, PERO SIN BodyData.
+        ///
+        /// BodyData es el JSON de todas las tablas del formulario y puede pesar
+        /// cientos de KB por registro. La pantalla lo descargaba para los ~1900
+        /// formularios y lo descartaba enseguida, porque al abrir uno vuelve a
+        /// pedir el completo a /{id}. Eran decenas de megas por cada visita.
+        ///
+        /// El HeaderData sí viaja: de ahí sale la fecha real del formulario, que
+        /// es por la que se filtra, y pesa poco.
+        /// </summary>
+        [HttpGet("lista")]
+        public async Task<ActionResult<object>> GetLista(
+            [FromQuery] int? templateId,
+            [FromQuery] DateTime? desde,
+            [FromQuery] DateTime? hasta,
+            [FromQuery] int pagina = 1,
+            [FromQuery] int tamano = 200)
+        {
+            try
+            {
+                var query = _context.FilledForms
+                    .Include(f => f.Template)
+                    .AsNoTracking()
+                    .AsQueryable();
+
+                if (templateId.HasValue && templateId.Value > 0)
+                    query = query.Where(f => f.TemplateID == templateId.Value);
+
+                // Día completo en los dos extremos: sin esto, buscar "del 7 al 7"
+                // no devuelve nada porque la fecha llega a las 00:00:00.
+                if (desde.HasValue)
+                    // Por la fecha del REGISTRO, no la de guardado: el usuario
+                    // busca por lo que dice el papel.
+                    query = query.Where(f => f.FechaRegistro >= desde.Value.Date);
+                if (hasta.HasValue)
+                    query = query.Where(f => f.FechaRegistro < hasta.Value.Date.AddDays(1));
+
+                var total = await query.CountAsync();
+
+                var tam = tamano <= 0 ? total : Math.Min(tamano, 1000);
+                var pag = Math.Max(pagina, 1);
+
+                var items = await query
+                    .OrderByDescending(f => f.FechaRegistro).ThenByDescending(f => f.CreatedAt)
+                    .Skip((pag - 1) * tam)
+                    .Take(tam)
+                    .Select(f => new
+                    {
+                        f.FormID,
+                        f.TemplateID,
+                        f.CreatedAt,
+                        f.FechaRegistro,
+                        f.UpdatedAt,
+                        // Se llama FilledBy, no CreatedBy: es el nombre del
+                        // operario que llenó el formulario.
+                        f.FilledBy,
+                        f.FilledByEmail,
+                        f.FilledByRole,
+                        f.HeaderData,
+                        f.FirmasData,
+                        TemplateNombre = f.Template != null ? f.Template.Nombre : null,
+                        TemplateCodigo = f.Template != null ? f.Template.Codigo : null,
+                        TemplateObsoleta = f.Template != null && f.Template.IsObsolete,
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    total,
+                    pagina = pag,
+                    tamano = tam,
+                    paginas = tam > 0 ? (int)Math.Ceiling((double)total / tam) : 1,
+                    items
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al armar el listado liviano de formularios");
+                return StatusCode(500, new { message = "Error al cargar el listado." });
+            }
+        }
+
+/// <summary>
+/// Datos para "Descargar Datos". Devuelve el encabezado, el cuerpo y las firmas
+/// completos de cada registro, así que un rango largo son muchos megas: por eso
+/// se sirve de a tandas (parámetros pagina/tamano) en vez de todo de una.
+/// El navegador va pidiendo las tandas hasta juntar el rango completo.
+///
+/// Con tamano = 0 devuelve todo junto, como antes.
+/// </summary>
 [HttpGet("erp-report")]
-public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
-    [FromQuery] DateTime? inicio, 
+public async Task<ActionResult<object>> GetErpReport(
+    [FromQuery] DateTime? inicio,
     [FromQuery] DateTime? fin,
     [FromQuery] int? templateId,
-    [FromQuery] string? lote)
+    [FromQuery] string? lote,
+    [FromQuery] int pagina = 1,
+    [FromQuery] int tamano = 0)
 {
     try 
     {
@@ -195,11 +563,12 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             .AsQueryable();
 
         // 2. Filtros
-        if (inicio.HasValue) query = query.Where(f => f.CreatedAt >= inicio.Value);
+        // Por la fecha del REGISTRO en todos los filtros de rango.
+        if (inicio.HasValue) query = query.Where(f => f.FechaRegistro >= inicio.Value.Date);
         if (fin.HasValue) 
         {
             var fechaFin = fin.Value.Date.AddHours(23).AddMinutes(59).AddSeconds(59);
-            query = query.Where(f => f.CreatedAt <= fechaFin);
+            query = query.Where(f => f.FechaRegistro <= fechaFin);
         }
         if (templateId.HasValue && templateId.Value > 0)
         {
@@ -210,10 +579,21 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             query = query.Where(f => f.HeaderData.Contains(lote) || f.BodyData.Contains(lote));
         }
 
-        // 3. Ejecutar
-        var forms = await query
-            .OrderByDescending(f => f.CreatedAt)
-            .ToListAsync();
+        // 3. Ejecutar. Se cuenta primero para que el navegador sepa cuántas
+        //    tandas faltan y pueda mostrar el avance.
+        var total = await query.CountAsync();
+
+        var ordenada = query.OrderByDescending(f => f.FechaRegistro).ThenByDescending(f => f.CreatedAt);
+
+        // Tope duro por pedido: sin esto un rango de meses trae miles de
+        // registros con todo su JSON y tumba la respuesta.
+        const int TAMANO_MAXIMO = 500;
+        if (tamano > TAMANO_MAXIMO) tamano = TAMANO_MAXIMO;
+        if (pagina < 1) pagina = 1;
+
+        var forms = tamano > 0
+            ? await ordenada.Skip((pagina - 1) * tamano).Take(tamano).ToListAsync()
+            : await ordenada.ToListAsync();
 
         // 4. Mapeo COMPLETO (Incluyendo Firmas y Observaciones)
         var result = forms.Select(f => new
@@ -221,15 +601,28 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             formID = f.FormID,
             templateID = f.TemplateID,
             templateName = f.Template?.Nombre ?? "Sin nombre",
+            // El código (FOR-PD-14, PD-04…) es como se identifica el formulario en
+            // planta; sin él el reporte solo puede mostrar el nombre largo.
+            formCode = f.Template?.Codigo ?? "",
             createdAt = f.CreatedAt,
             headerData = f.HeaderData, 
             bodyData = f.BodyData,
             // 👇 ESTOS SON LOS CAMPOS QUE FALTABAN 👇
-            firmasData = f.FirmasData,      
-            observaciones = f.Observaciones 
+            firmasData = f.FirmasData,
+            observaciones = f.Observaciones
         });
 
-        return Ok(result);
+        // Sin paginar se devuelve el array pelado, como venía haciéndose.
+        if (tamano <= 0) return Ok(result);
+
+        return Ok(new
+        {
+            total,
+            pagina,
+            tamano,
+            hayMas = pagina * tamano < total,
+            datos = result,
+        });
     }
     catch (Exception ex)
     {
@@ -381,6 +774,57 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             return Ok(editData);
         }
 
+        /// <summary>
+        /// Fecha del registro leída del encabezado.
+        ///
+        /// Es la que el operario escribió, no la de guardado. Un formulario del
+        /// día 9 puede guardarse el 10, y los filtros tienen que encontrarlo
+        /// por el 9, que es lo que dice el papel.
+        ///
+        /// Se descartan los campos de vencimiento, caducidad y versión: dicen
+        /// "fecha" pero no son la del registro.
+        /// </summary>
+        private static DateTime? FechaDelHeader(string? headerData)
+        {
+            if (string.IsNullOrWhiteSpace(headerData)) return null;
+
+            try
+            {
+                var header = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(headerData);
+                if (header == null) return null;
+
+                foreach (var (clave, valor) in header)
+                {
+                    var k = clave.ToUpperInvariant();
+                    if (!k.Contains("FECHA") && !k.Contains("DATE")) continue;
+                    if (k.Contains("VENCIM") || k.Contains("CADUC") || k.Contains("VERSION")
+                        || k.Contains("EXPIR") || k.Contains("NACIM")) continue;
+
+                    var texto = valor.ValueKind == JsonValueKind.String
+                        ? valor.GetString()
+                        : valor.ToString();
+                    if (string.IsNullOrWhiteSpace(texto)) continue;
+
+                    if (DateTime.TryParse(texto, System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var fecha))
+                        return fecha.Date;
+
+                    // dd/MM/yyyy, que es como se escribe en planta.
+                    if (DateTime.TryParseExact(texto.Trim(),
+                            new[] { "dd/MM/yyyy", "d/M/yyyy", "dd-MM-yyyy" },
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var dmy))
+                        return dmy.Date;
+                }
+            }
+            catch
+            {
+                // HeaderData corrupto: se cae a CreatedAt en el llamador.
+            }
+
+            return null;
+        }
+
        [HttpPost]
         public async Task<ActionResult<FilledForm>> PostFilledForm([FromBody] FilledFormInputDto dto)
         {
@@ -428,7 +872,11 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 FirmasData = dto.FirmasData,
                 TipoProducto = dto.TipoProducto, // 🦐🐟 NUEVO: Guardar tipo de producto
                 Observaciones = dto.Observaciones,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.Now,
+                // La fecha del encabezado, que es por la que se busca. Si el
+                // formulario no trae ninguna, se usa la de guardado: dejarla en
+                // NULL lo sacaría de todos los filtros por rango.
+                FechaRegistro = FechaDelHeader(dto.HeaderData) ?? DateTime.Now.Date
             };
 
             _context.FilledForms.Add(filledForm);
@@ -463,9 +911,40 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 return BadRequest(new { message = "El TemplateID proporcionado no es válido." });
             }
 
+            // 🔒 BLOQUEO POR ANTIGÜEDAD: Ver Formularios y Editar Formulario Llenado guardan las
+            // firmas por acá (no por /Signatures/sign), así que el límite de horas también tiene
+            // que revisarse acá. Si no, el mismo registro vencido se bloquea en Gestión de Firmas
+            // y se firma sin problema entrando por Editar.
+            // Solo frena cuando el guardado AGREGA una firma nueva: corregir datos de un registro
+            // viejo sigue permitido.
+            if (AgregaFirmaNueva(existingForm.FirmasData, dto.FirmasData)
+                && await EstaBloqueadoParaFirmarAsync(existingForm))
+            {
+                var lockThreshold = await GetLockThresholdHoursAsync();
+                _logger.LogWarning(
+                    "🔒 Firma rechazada en formulario {FormId}: supera el límite de {Limite}h desde su creación",
+                    id, lockThreshold);
+                return BadRequest(new
+                {
+                    message = $"🔒 El registro superó el límite de {lockThreshold} horas (sin contar sábados ni domingos) desde su creación y está bloqueado para firma. Un Administrador debe habilitarlo en Supervisión General."
+                });
+            }
+
+            // 🔍 AUDITORÍA: se compara ANTES de pisar los datos viejos.
+            await RegistrarCambiosAsync(
+                existingForm, dto.HeaderData, dto.BodyData,
+                dto.FilledBy, dto.FilledByEmail, dto.FilledByRole);
+
             // Actualizar los campos del formulario existente
             existingForm.TemplateID = dto.TemplateID;
             existingForm.HeaderData = dto.HeaderData;
+            // Si el encabezado cambió, la fecha del registro puede haber
+            // cambiado con él: se recalcula para que los filtros lo encuentren
+            // por la fecha nueva. Se conserva la anterior si el encabezado
+            // nuevo no trae ninguna.
+            existingForm.FechaRegistro = FechaDelHeader(dto.HeaderData)
+                ?? existingForm.FechaRegistro
+                ?? existingForm.CreatedAt.Date;
             existingForm.BodyData = dto.BodyData;
             existingForm.FirmasData = dto.FirmasData;
             existingForm.TipoProducto = dto.TipoProducto; // 🦐🐟 NUEVO: Actualizar tipo de producto
@@ -504,6 +983,92 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             }
         }
 
+        /// <summary>
+        /// Lee el umbral de horas para bloqueo desde AlertConfiguration (lo configura el admin en
+        /// Gestión de Alertas). Mismo criterio que SignaturesController: si no hay config o el valor
+        /// es inválido, 36 por defecto.
+        /// </summary>
+        private async Task<int> GetLockThresholdHoursAsync()
+        {
+            try
+            {
+                var config = await _context.AlertConfigurations.FirstOrDefaultAsync();
+                if (config != null && config.LockThresholdHours > 0)
+                    return config.LockThresholdHours;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudo leer LockThresholdHours, usando 36 por defecto");
+            }
+            return 36;
+        }
+
+        /// <summary>
+        /// ¿El registro pasó el límite de horas y ningún Administrador lo habilitó?
+        /// Mismo criterio que /Signatures/sign: se cuenta desde CreatedAt y no se cuentan
+        /// sábados ni domingos. La habilitación manual vive dentro de HeaderData.
+        /// </summary>
+        private async Task<bool> EstaBloqueadoParaFirmarAsync(FilledForm form)
+        {
+            bool estaHabilitado = !string.IsNullOrEmpty(form.HeaderData)
+                                  && form.HeaderData.Contains("unlocked36h");
+            if (estaHabilitado) return false;
+
+            var lockThreshold = await GetLockThresholdHoursAsync();
+            var diffHours = SignaturesController.BusinessHoursBetween(form.CreatedAt, DateTime.Now);
+            return diffHours > lockThreshold;
+        }
+
+        /// <summary>
+        /// ¿El guardado agrega la imagen de una firma que antes no estaba?
+        ///
+        /// Se compara puesto por puesto: solo interesa que aparezca una firma donde no había.
+        /// Cambiar el nombre del firmante, el cargo o una observación NO cuenta como firmar, para
+        /// no trabar la corrección de registros viejos.
+        /// </summary>
+        private static bool AgregaFirmaNueva(string? firmasAnteriores, string? firmasNuevas)
+        {
+            var nuevas = PuestosConFirma(firmasNuevas);
+            if (nuevas.Count == 0) return false;
+
+            var anteriores = PuestosConFirma(firmasAnteriores);
+            return nuevas.Any(puesto => !anteriores.Contains(puesto));
+        }
+
+        /// <summary>Puestos que ya tienen imagen de firma (url o base64) dentro de FirmasData.</summary>
+        private static HashSet<string> PuestosConFirma(string? firmasData)
+        {
+            var puestos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(firmasData)) return puestos;
+
+            try
+            {
+                var firmas = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(firmasData);
+                if (firmas == null) return puestos;
+
+                foreach (var kvp in firmas)
+                {
+                    if (kvp.Value.ValueKind != JsonValueKind.Object) continue;
+                    if (!kvp.Value.TryGetProperty("firma", out var firma) || firma.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    bool tieneImagen =
+                        (firma.TryGetProperty("url", out var url) && url.ValueKind == JsonValueKind.String
+                         && !string.IsNullOrWhiteSpace(url.GetString())) ||
+                        (firma.TryGetProperty("base64", out var b64) && b64.ValueKind == JsonValueKind.String
+                         && !string.IsNullOrWhiteSpace(b64.GetString()));
+
+                    if (tieneImagen) puestos.Add(kvp.Key);
+                }
+            }
+            catch (JsonException)
+            {
+                // FirmasData ilegible: se trata como "sin firmas" y decide el resto de la validación.
+            }
+
+            return puestos;
+        }
+
         // PATCH: api/FilledForms/{id}/autosave - Para autoguardado específico
         [HttpPatch("{id}/autosave")]
         public async Task<IActionResult> AutosaveFilledForm(int id, [FromBody] AutosaveDto dto)
@@ -514,16 +1079,49 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 return NotFound(new { message = "El formulario llenado no fue encontrado." });
             }
 
+            // 🔍 AUDITORÍA: el autoguardado también modifica valores ya guardados.
+            // Se compara contra lo que hay, y los cambios seguidos del mismo
+            // usuario se agrupan en un solo registro.
+            await RegistrarCambiosAsync(
+                existingForm,
+                string.IsNullOrEmpty(dto.HeaderData) ? existingForm.HeaderData : dto.HeaderData,
+                string.IsNullOrEmpty(dto.BodyData) ? existingForm.BodyData : dto.BodyData,
+                dto.FilledBy, dto.FilledByEmail, dto.FilledByRole);
+
             // Solo actualizar datos para autoguardado (sin cambiar template)
             if (!string.IsNullOrEmpty(dto.HeaderData))
                 existingForm.HeaderData = dto.HeaderData;
+                existingForm.FechaRegistro = FechaDelHeader(dto.HeaderData)
+                    ?? existingForm.FechaRegistro
+                    ?? existingForm.CreatedAt.Date;
+            // Si el encabezado cambió, la fecha del registro puede haber
+            // cambiado con él: se recalcula para que los filtros lo encuentren
+            // por la fecha nueva. Se conserva la anterior si el encabezado
+            // nuevo no trae ninguna.
+            existingForm.FechaRegistro = FechaDelHeader(dto.HeaderData)
+                ?? existingForm.FechaRegistro
+                ?? existingForm.CreatedAt.Date;
                 
             if (!string.IsNullOrEmpty(dto.BodyData))
                 existingForm.BodyData = dto.BodyData;
                 
+            // 🔒 El autoguardado no puede meter una firma nueva en un registro ya bloqueado por
+            // antigüedad. No se devuelve error (cortaría el autoguardado de los datos): se guarda
+            // todo lo demás y se deja la firma afuera. El usuario recibe el aviso al guardar.
             if (!string.IsNullOrEmpty(dto.FirmasData))
-                existingForm.FirmasData = dto.FirmasData;
-            
+            {
+                if (AgregaFirmaNueva(existingForm.FirmasData, dto.FirmasData)
+                    && await EstaBloqueadoParaFirmarAsync(existingForm))
+                {
+                    _logger.LogWarning(
+                        "🔒 Autoguardado del formulario {FormId}: se ignoró una firma nueva, el registro está bloqueado por antigüedad", id);
+                }
+                else
+                {
+                    existingForm.FirmasData = dto.FirmasData;
+                }
+            }
+
             // 🦐🐟 NUEVO: Actualizar tipo de producto en autoguardado
             if (!string.IsNullOrEmpty(dto.TipoProducto))
                 existingForm.TipoProducto = dto.TipoProducto;
@@ -553,6 +1151,321 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             {
                 return BadRequest(new { message = "Error en autoguardado. Intente nuevamente." });
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // 🔍 AUDITORÍA DE VALORES: qué se modificó de un formulario ya guardado
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Los cambios de una misma persona hechos dentro de esta ventana se
+        /// juntan en un solo registro, así un autoguardado no genera cien filas.
+        /// </summary>
+        private const int VENTANA_AGRUPADO_MIN = 30;
+
+        /// <summary>
+        /// Aplana un JSON de formulario a "clave → valor de texto".
+        ///
+        /// Encabezado:  h:CAMPO
+        /// Tablas:      b:&lt;elemento&gt;:&lt;fila&gt;:COLUMNA
+        /// Secciones:   b:&lt;elemento&gt;:CAMPO
+        ///
+        /// Las claves internas (las que empiezan con "_", como _deleted o
+        /// _rowSpan) no son datos del operario y se ignoran.
+        /// </summary>
+        private static Dictionary<string, string> AplanarValores(string? headerJson, string? bodyJson)
+        {
+            var plano = new Dictionary<string, string>();
+
+            static string Texto(JsonElement v) => v.ValueKind switch
+            {
+                JsonValueKind.String => v.GetString() ?? "",
+                JsonValueKind.Number => v.ToString(),
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                JsonValueKind.Null or JsonValueKind.Undefined => "",
+                _ => v.GetRawText()
+            };
+
+            static bool EsInterna(string clave) => string.IsNullOrEmpty(clave) || clave.StartsWith("_");
+
+            static bool EsEscalar(JsonElement v) =>
+                v.ValueKind is JsonValueKind.String or JsonValueKind.Number
+                    or JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null;
+
+            // ── Encabezado ──
+            if (!string.IsNullOrWhiteSpace(headerJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(headerJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var prop in doc.RootElement.EnumerateObject())
+                        {
+                            if (EsInterna(prop.Name) || !EsEscalar(prop.Value)) continue;
+                            plano[$"h:{prop.Name}"] = Texto(prop.Value);
+                        }
+                    }
+                }
+                catch (JsonException) { /* JSON roto: se ignora, no se audita */ }
+            }
+
+            // ── Cuerpo ──
+            if (!string.IsNullOrWhiteSpace(bodyJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(bodyJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        int elemIdx = -1;
+                        foreach (var elemento in doc.RootElement.EnumerateArray())
+                        {
+                            elemIdx++;
+                            if (elemento.ValueKind != JsonValueKind.Object) continue;
+                            if (!elemento.TryGetProperty("data", out var data)) continue;
+
+                            if (data.ValueKind == JsonValueKind.Array)
+                            {
+                                // Tabla: una entrada por celda
+                                int filaIdx = -1;
+                                foreach (var fila in data.EnumerateArray())
+                                {
+                                    filaIdx++;
+                                    if (fila.ValueKind != JsonValueKind.Object) continue;
+                                    foreach (var celda in fila.EnumerateObject())
+                                    {
+                                        if (EsInterna(celda.Name) || !EsEscalar(celda.Value)) continue;
+                                        plano[$"b:{elemIdx}:{filaIdx}:{celda.Name}"] = Texto(celda.Value);
+                                    }
+                                }
+                            }
+                            else if (data.ValueKind == JsonValueKind.Object)
+                            {
+                                // Sección de campos sueltos
+                                foreach (var campo in data.EnumerateObject())
+                                {
+                                    if (EsInterna(campo.Name) || !EsEscalar(campo.Value)) continue;
+                                    plano[$"b:{elemIdx}:{campo.Name}"] = Texto(campo.Value);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (JsonException) { /* JSON roto: se ignora, no se audita */ }
+            }
+
+            return plano;
+        }
+
+        /// <summary>Convierte una clave aplanada en un cambio con sus partes separadas.</summary>
+        private static CambioValorDto ArmarCambio(string clave, string? antes, string? despues)
+        {
+            var cambio = new CambioValorDto { Clave = clave, Antes = antes, Despues = despues };
+
+            if (clave.StartsWith("h:"))
+            {
+                cambio.Ambito = "encabezado";
+                cambio.Campo = clave.Substring(2);
+                return cambio;
+            }
+
+            // b:<elemento>[:<fila>]:<campo>  — el campo puede tener ":" adentro,
+            // así que se parte solo por las primeras posiciones.
+            var partes = clave.Split(':');
+            cambio.Ambito = "seccion";
+            if (partes.Length >= 3 && int.TryParse(partes[1], out var elem))
+            {
+                cambio.Elemento = elem;
+                if (partes.Length >= 4 && int.TryParse(partes[2], out var fila))
+                {
+                    cambio.Ambito = "tabla";
+                    cambio.Fila = fila;
+                    cambio.Campo = string.Join(":", partes.Skip(3));
+                }
+                else
+                {
+                    cambio.Campo = string.Join(":", partes.Skip(2));
+                }
+            }
+            else
+            {
+                cambio.Campo = clave;
+            }
+            return cambio;
+        }
+
+        /// <summary>
+        /// Compara lo guardado contra lo que llega y devuelve solo los valores
+        /// que cambiaron. Un campo que pasa de vacío a vacío (null vs "") no
+        /// cuenta como cambio.
+        /// </summary>
+        private static List<CambioValorDto> CompararValores(
+            string? headerViejo, string? bodyViejo, string? headerNuevo, string? bodyNuevo)
+        {
+            var antes = AplanarValores(headerViejo, bodyViejo);
+            var despues = AplanarValores(headerNuevo, bodyNuevo);
+            var cambios = new List<CambioValorDto>();
+
+            foreach (var clave in antes.Keys.Union(despues.Keys))
+            {
+                antes.TryGetValue(clave, out var v1);
+                despues.TryGetValue(clave, out var v2);
+                var a = (v1 ?? "").Trim();
+                var d = (v2 ?? "").Trim();
+                if (a == d) continue;
+                cambios.Add(ArmarCambio(clave, a, d));
+            }
+
+            return cambios;
+        }
+
+        /// <summary>
+        /// Registra en FilledFormChanges los valores que cambiaron. Si la misma
+        /// persona ya tenía una tanda abierta en los últimos VENTANA_AGRUPADO_MIN
+        /// minutos, se acumula ahí conservando el valor ORIGINAL: si algo pasó de
+        /// A → B y después de B → C, queda registrado A → C.
+        /// </summary>
+        private async Task RegistrarCambiosAsync(
+            FilledForm formulario, string? headerNuevo, string? bodyNuevo,
+            string? usuario, string? email, string? rol)
+        {
+            try
+            {
+                var cambios = CompararValores(formulario.HeaderData, formulario.BodyData, headerNuevo, bodyNuevo);
+                if (cambios.Count == 0) return;
+
+                var ahora = DateTime.Now;
+                var desde = ahora.AddMinutes(-VENTANA_AGRUPADO_MIN);
+                var quien = string.IsNullOrWhiteSpace(usuario) ? "(sin identificar)" : usuario.Trim();
+
+                var tanda = await _context.FilledFormChanges
+                    .Where(c => c.FormID == formulario.FormID && c.ChangedBy == quien && c.UpdatedAt >= desde)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .FirstOrDefaultAsync();
+
+                var opciones = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+                if (tanda == null)
+                {
+                    _context.FilledFormChanges.Add(new FilledFormChange
+                    {
+                        FormID = formulario.FormID,
+                        ChangedBy = quien,
+                        ChangedByEmail = email,
+                        ChangedByRole = rol,
+                        ChangedAt = ahora,
+                        UpdatedAt = ahora,
+                        Cambios = JsonSerializer.Serialize(cambios, opciones),
+                        TotalCambios = cambios.Count
+                    });
+                }
+                else
+                {
+                    var previos = new List<CambioValorDto>();
+                    if (!string.IsNullOrWhiteSpace(tanda.Cambios))
+                    {
+                        try
+                        {
+                            previos = JsonSerializer.Deserialize<List<CambioValorDto>>(tanda.Cambios, opciones)
+                                      ?? new List<CambioValorDto>();
+                        }
+                        catch (JsonException) { previos = new List<CambioValorDto>(); }
+                    }
+
+                    var porClave = previos.ToDictionary(c => c.Clave, c => c);
+                    foreach (var c in cambios)
+                    {
+                        if (porClave.TryGetValue(c.Clave, out var existente))
+                        {
+                            existente.Despues = c.Despues; // el "antes" original se conserva
+                        }
+                        else
+                        {
+                            porClave[c.Clave] = c;
+                        }
+                    }
+
+                    // Si volvió al valor original deja de ser un cambio.
+                    var finales = porClave.Values
+                        .Where(c => (c.Antes ?? "") != (c.Despues ?? ""))
+                        .ToList();
+
+                    tanda.Cambios = JsonSerializer.Serialize(finales, opciones);
+                    tanda.TotalCambios = finales.Count;
+                    tanda.UpdatedAt = ahora;
+                    _context.Entry(tanda).State = EntityState.Modified;
+                }
+            }
+            catch (Exception ex)
+            {
+                // La auditoría NUNCA debe impedir que se guarde el formulario.
+                _logger.LogError(ex, "No se pudieron registrar los cambios del formulario {FormId}", formulario.FormID);
+            }
+        }
+
+        /// <summary>
+        /// Historial de valores modificados de un formulario, del más reciente al
+        /// más viejo. Lo consume la pantalla VER para marcar las celdas tocadas.
+        /// </summary>
+        [HttpGet("{id}/cambios")]
+        public async Task<IActionResult> GetCambios(int id)
+        {
+            if (!FilledFormExists(id))
+                return NotFound(new { message = "El formulario no existe." });
+
+            var opciones = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+            List<FilledFormChange> filas;
+            try
+            {
+                filas = await _context.FilledFormChanges
+                    .Where(c => c.FormID == id)
+                    .OrderByDescending(c => c.ChangedAt)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                // La tabla se crea con un script aparte. Mientras no se haya
+                // corrido, la pantalla VER se muestra sin marcas en vez de fallar.
+                _logger.LogWarning(ex,
+                    "No se pudo leer FilledFormChanges. ¿Falta correr "
+                    + "backend-frigo/Migrations/CreateFilledFormChangesTable.sql?");
+                return Ok(new { formId = id, totalTandas = 0, totalCambios = 0, tandas = Array.Empty<object>() });
+            }
+
+            var tandas = filas.Select(c =>
+            {
+                List<CambioValorDto> detalle;
+                try
+                {
+                    detalle = string.IsNullOrWhiteSpace(c.Cambios)
+                        ? new List<CambioValorDto>()
+                        : JsonSerializer.Deserialize<List<CambioValorDto>>(c.Cambios, opciones) ?? new List<CambioValorDto>();
+                }
+                catch (JsonException) { detalle = new List<CambioValorDto>(); }
+
+                return new
+                {
+                    id = c.Id,
+                    changedBy = c.ChangedBy,
+                    changedByEmail = c.ChangedByEmail,
+                    changedByRole = c.ChangedByRole,
+                    changedAt = c.ChangedAt,
+                    updatedAt = c.UpdatedAt,
+                    totalCambios = c.TotalCambios,
+                    cambios = detalle
+                };
+            }).ToList();
+
+            return Ok(new
+            {
+                formId = id,
+                totalTandas = tandas.Count,
+                totalCambios = tandas.Sum(t => t.totalCambios),
+                tandas
+            });
         }
 
         [HttpDelete("{id}")]
@@ -955,12 +1868,22 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
         {
             if (startDate > endDate)
             {
-                return BadRequest(new { message = "La fecha de inicio debe ser menor a la fecha final" });
+                return BadRequest(new { message = "La fecha de inicio no puede ser posterior a la fecha final" });
             }
+
+            // El navegador manda solo la fecha, así que endDate llega a las
+            // 00:00:00 y todo lo creado ese día después de medianoche quedaba
+            // fuera: buscar "del 7 al 7" no devolvía nada y había que estirar el
+            // rango hasta el 8. Se toma el día completo.
+            //
+            // AddDays(1).AddTicks(-1) y no 23:59:59, para no perder un registro
+            // guardado a las 23:59:59.500.
+            var rangoDesde = startDate.Date;
+            var rangoHasta = endDate.Date.AddDays(1).AddTicks(-1);
 
             var forms = await _context.FilledForms
                 .Include(f => f.Template)
-                .Where(f => f.CreatedAt >= startDate && f.CreatedAt <= endDate)
+                .Where(f => f.FechaRegistro >= rangoDesde && f.FechaRegistro <= rangoHasta)
                 .OrderBy(f => f.CreatedAt)
                 .ToListAsync();
 
@@ -1010,6 +1933,38 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
             return fallbackVersion;
         }
 
+        /// <summary>
+        /// Lista JSON lista para enviar. Devuelve siempre un arreglo (vacío si el
+        /// texto no existe, está dañado o no es una lista) y tolera el JSON
+        /// guardado dos veces como texto. Al ser JsonElement, Preserve no le
+        /// agrega "$id"/"$values".
+        /// </summary>
+        private static JsonElement ListaJson(string? json)
+        {
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var raiz = doc.RootElement;
+
+                    if (raiz.ValueKind == JsonValueKind.Array)
+                        return raiz.Clone();
+
+                    if (raiz.ValueKind == JsonValueKind.String)
+                    {
+                        using var interno = JsonDocument.Parse(raiz.GetString() ?? "[]");
+                        if (interno.RootElement.ValueKind == JsonValueKind.Array)
+                            return interno.RootElement.Clone();
+                    }
+                }
+                catch (JsonException) { /* JSON dañado: se devuelve lista vacía */ }
+            }
+
+            using var vacio = JsonDocument.Parse("[]");
+            return vacio.RootElement.Clone();
+        }
+
         // 🎯 MÉTODO HELPER: Obtiene la estructura de una versión específica
         private async Task<object?> GetTemplateStructureByVersion(int templateId, string version)
         {
@@ -1025,18 +1980,29 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
                 return null;
             }
 
-            // Construir objeto con la estructura
+            // ⚠️ Program.cs usa ReferenceHandler.Preserve: una List<object> se
+            // envía como {"$id":"3","$values":[...]} y no como [...]. El frontend
+            // hacía .map() sobre eso y la edición reventaba con
+            // "bodyElements.map is not a function" (form #2369).
+            // Un JsonElement se escribe tal cual, sin esos metadatos.
+            var template = await _context.Templates.AsNoTracking()
+                .FirstOrDefaultAsync(t => t.TemplateID == templateId);
+
+            // Mismas claves que GetCurrentTemplateData y el snapshot: antes esta
+            // rama no mandaba código ni nombre y la pantalla mostraba "N/A".
             var structure = new
             {
-                headerFields = string.IsNullOrEmpty(templateVersion.HeaderFields) 
-                    ? new List<object>() 
-                    : JsonSerializer.Deserialize<List<object>>(templateVersion.HeaderFields),
-                bodyElements = string.IsNullOrEmpty(templateVersion.BodyElements) 
-                    ? new List<object>() 
-                    : JsonSerializer.Deserialize<List<object>>(templateVersion.BodyElements),
-                firmas = string.IsNullOrEmpty(templateVersion.Firmas) 
-                    ? new List<object>() 
-                    : JsonSerializer.Deserialize<List<object>>(templateVersion.Firmas)
+                TemplateID = templateId,
+                Codigo = string.IsNullOrWhiteSpace(templateVersion.Codigo) ? template?.Codigo : templateVersion.Codigo,
+                Nombre = string.IsNullOrWhiteSpace(templateVersion.Nombre) ? template?.Nombre : templateVersion.Nombre,
+                Version = templateVersion.Version,
+                Objetivo = templateVersion.Supervisa ?? template?.Supervisa,
+                Proceso = templateVersion.Proceso ?? template?.Proceso,
+                CuandoSeUsa = templateVersion.CuandoSeUsa ?? template?.CuandoSeUsa,
+                QuienLoLlena = templateVersion.QuienLoLlena ?? template?.QuienLoLlena,
+                headerFields = ListaJson(templateVersion.HeaderFields),
+                bodyElements = ListaJson(templateVersion.BodyElements),
+                firmas = ListaJson(templateVersion.Firmas)
             };
 
             Console.WriteLine($"✅ Estructura recuperada para version={version}");
@@ -1491,6 +2457,24 @@ public async Task<ActionResult<IEnumerable<object>>> GetErpReport(
         public string? FirmasData { get; set; }
         public string? TipoProducto { get; set; } // 🦐🐟 NUEVO
         public string? Observaciones { get; set; }
+
+        // ✅ AUDITORÍA: quién está modificando (para el historial de cambios)
+        public string? FilledBy { get; set; }
+        public string? FilledByEmail { get; set; }
+        public string? FilledByRole { get; set; }
+    }
+
+    /// <summary>Un valor que cambió dentro de un formulario ya guardado.</summary>
+    public class CambioValorDto
+    {
+        /// <summary>Clave para ubicar la celda desde el front: "h:CAMPO" o "b:0:3:COLUMNA".</summary>
+        public string Clave { get; set; } = string.Empty;
+        /// <summary>"encabezado" | "tabla" | "seccion"</summary>
+        public string Ambito { get; set; } = string.Empty;
+        public int? Elemento { get; set; }
+        public int? Fila { get; set; }
+        public string Campo { get; set; } = string.Empty;
+        public string? Antes { get; set; }
+        public string? Despues { get; set; }
     }
 }
-

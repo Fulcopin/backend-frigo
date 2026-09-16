@@ -1,4 +1,4 @@
-
+﻿
 
 using FormBuilder.API.Data;
 using FormBuilder.API.Services;
@@ -47,6 +47,9 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddScoped<IEmailService, GmailService>();
 builder.Services.AddHostedService<AlertBackgroundService>();
 
+// ✅ Módulo de Personal: validación de reglas de tiempo por proceso
+builder.Services.AddScoped<PersonalValidationService>();
+
 // ✅ HttpClient para ProxyController
 builder.Services.AddHttpClient(); // ✅ AGREGADO: necesario para IHttpClientFactory
 builder.Services.AddHttpClient("ExternalApi", client =>
@@ -59,6 +62,11 @@ builder.Services.AddControllers().AddJsonOptions(options =>
     options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.Preserve;
 });
 
+builder.Services.AddOpenApi();
+
+// Documento OpenAPI (el "swagger") para poder probar la API desde Postman o
+// cualquier cliente: se sirve en /openapi/v1.json. Usa el paquete
+// Microsoft.AspNetCore.OpenApi que el proyecto ya tenia; no agrega dependencias.
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -74,6 +82,7 @@ app.UseCors(MyAllowSpecificOrigins);     // 2️⃣ CORS antes de Auth
 //app.UseHttpsRedirection();             // Comentado (Render maneja HTTPS)
 app.UseAuthentication();                 // 3️⃣ AGREGADO: Autenticación
 app.UseAuthorization();                  // 4️⃣ Autorización
+app.MapOpenApi();                        // 4️⃣ /openapi/v1.json (contrato de la API)
 app.MapControllers();                    // 5️⃣ Controladores al final
 
 app.Run();

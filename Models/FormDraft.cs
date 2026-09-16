@@ -43,7 +43,7 @@ namespace FormBuilder.API.Models
         [Column(TypeName = "nvarchar(max)")]
         public string? BodyData { get; set; }
 
-        /// <summary>Datos de firmas sin imágenes (JSON)</summary>
+        /// <summary>Datos de firmas, con la URL de la imagen firmada (JSON)</summary>
         [Column(TypeName = "nvarchar(max)")]
         public string? FirmasData { get; set; }
 

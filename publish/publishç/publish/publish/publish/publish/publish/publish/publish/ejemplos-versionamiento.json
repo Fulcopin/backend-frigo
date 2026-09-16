@@ -1,0 +1,118 @@
+{
+  "ejemploSnapshot": {
+    "descripcion": "Así se ve un TemplateSnapshot guardado en la base de datos",
+    "formato": "JSON serializado como string",
+    "contenido": {
+      "TemplateID": 9,
+      "Codigo": "FOR-CPCLT",
+      "Nombre": "Control de Productos Congelados (Liberación de Túneles)",
+      "Version": "02-01",
+      "Objetivo": "Asegurar que los productos congelados cumplen con los estándares de calidad",
+      "Proceso": "Calidad / Producción",
+      "CuandoSeUsa": "Al finalizar el ciclo de congelación en túneles",
+      "QuienLoLlena": "Supervisor de Calidad / Jefe de Cámara",
+      "HeaderFields": "[{\"label\":\"Fecha\",\"type\":\"date\",\"required\":true}]",
+      "BodyElements": "[{\"id\":1688886401000,\"type\":\"table\",\"title\":\"Registro de Liberación\"}]",
+      "Firmas": "[{\"puesto\":\"SUPERVISOR GENERAL DE PRODUCCIÓN\"}]",
+      "CreatedAt": "2025-11-01T05:17:57.5646958",
+      "UpdatedAt": null
+    }
+  },
+  "ejemploFormularioConSnapshot": {
+    "FormID": 4,
+    "TemplateID": 9,
+    "TemplateVersion": "02-01",
+    "TemplateSnapshot": "{\"TemplateID\":9,\"Codigo\":\"FOR-CPCLT\",\"Nombre\":\"Control de Productos Congelados\",\"Version\":\"02-01\"}",
+    "HeaderData": "{\"Fecha\":\"2025-11-12\"}",
+    "BodyData": "[{\"rows\":[{\"LOTE DE PROCESO\":\"jnd\"}]}]",
+    "CreatedAt": "2025-11-12T05:19:59.6836999",
+    "IsHistorical": true
+  },
+  "ejemploRespuestaAPI": {
+    "GET /api/FilledForms/4": {
+      "formID": 4,
+      "templateID": 9,
+      "templateVersion": "02-01",
+      "headerData": "{\"Fecha\":\"2025-11-12\"}",
+      "bodyData": "[{\"rows\":[{\"LOTE DE PROCESO\":\"jnd\"}]}]",
+      "createdAt": "2025-11-12T05:19:59.6836999",
+      "template": {
+        "templateID": 9,
+        "codigo": "FOR-CPCLT",
+        "nombre": "Control de Productos Congelados",
+        "version": "02-01",
+        "objetivo": "Asegurar que los productos congelados cumplen..."
+      },
+      "isHistorical": true,
+      "nota": "isHistorical=true indica que usa el snapshot guardado, no el template actual"
+    }
+  },
+  "pruebasPostman": {
+    "1_CrearFormularioNuevo": {
+      "method": "POST",
+      "url": "http://localhost:5074/api/FilledForms",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "templateID": 9,
+        "headerData": "{\"Fecha\":\"2025-12-15\"}",
+        "bodyData": "[{\"rows\":[{\"LOTE DE PROCESO\":\"L001\"}]}]",
+        "firmasData": "{}",
+        "observaciones": "Prueba de versionamiento"
+      },
+      "verificar": [
+        "Respuesta incluye FormID",
+        "Se guardó TemplateVersion",
+        "Se guardó TemplateSnapshot completo"
+      ]
+    },
+    "2_ObtenerFormulario": {
+      "method": "GET",
+      "url": "http://localhost:5074/api/FilledForms/{id}",
+      "verificar": [
+        "templateVersion está presente",
+        "template contiene estructura completa",
+        "isHistorical indica si usa snapshot"
+      ]
+    },
+    "3_ModificarTemplate": {
+      "method": "PUT",
+      "url": "http://localhost:5074/api/Templates/9",
+      "body": {
+        "codigo": "FOR-CPCLT",
+        "nombre": "Control de Productos Congelados V2",
+        "version": "03-01",
+        "objetivo": "Nuevo objetivo actualizado",
+        "headerFields": "[{\"label\":\"Fecha Actualizada\",\"type\":\"date\"}]"
+      },
+      "nota": "Después de esto, formularios antiguos siguen usando versión 02-01"
+    },
+    "4_VerificarFormularioAntiguo": {
+      "method": "GET",
+      "url": "http://localhost:5074/api/FilledForms/{idAntiguo}",
+      "resultadoEsperado": {
+        "templateVersion": "02-01",
+        "isHistorical": true,
+        "template": {
+          "version": "02-01",
+          "nombre": "Control de Productos Congelados",
+          "nota": "Muestra el formato ANTIGUO aunque el template actual sea 03-01"
+        }
+      }
+    },
+    "5_CrearFormularioConTemplateActualizado": {
+      "method": "POST",
+      "url": "http://localhost:5074/api/FilledForms",
+      "body": {
+        "templateID": 9,
+        "headerData": "{\"Fecha Actualizada\":\"2025-12-15\"}",
+        "bodyData": "[]"
+      },
+      "resultadoEsperado": {
+        "templateVersion": "03-01",
+        "nota": "Nuevo formulario usa la versión actualizada 03-01"
+      }
+    }
+  }
+}

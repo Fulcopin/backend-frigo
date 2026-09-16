@@ -1,0 +1,7 @@
+{
+  "TemplateID": 1,
+  "HeaderData": "{\"codigoForm\":\"FOR-PD-1\",\"version\":\"1\",\"fecha\":\"25/2/2005\",\"fechaTurno\":\"Mañana\"}",
+  "BodyData": "{\"sections\":[{\"id\":\"tabla-principal\",\"data\":[{\"producto\":\"Producto A\",\"lote\":\"L001\",\"empaque\":\"Caja 500g\",\"cliente\":\"Cliente XYZ\",\"cajas\":\"100\",\"etiquetas\":\"100\",\"entrega\":\"Juan Pérez\",\"recibe\":\"María López\",\"aprueba\":\"Carlos García\",\"aseguramientoCalidad\":\"Ana Torres\",\"etiquetasDanadas\":\"2\"},{\"producto\":\"Producto B\",\"lote\":\"L002\",\"empaque\":\"Bolsa 250g\",\"cliente\":\"Cliente ABC\",\"cajas\":\"50\",\"etiquetas\":\"50\",\"entrega\":\"Pedro Ruiz\",\"recibe\":\"Laura Díaz\",\"aprueba\":\"Miguel Santos\",\"aseguramientoCalidad\":\"Ana Torres\",\"etiquetasDanadas\":\"1\"},{\"producto\":\"\",\"lote\":\"\",\"empaque\":\"\",\"cliente\":\"\",\"cajas\":\"\",\"etiquetas\":\"\",\"entrega\":\"\",\"recibe\":\"\",\"aprueba\":\"\",\"aseguramientoCalidad\":\"\",\"etiquetasDanadas\":\"\"}]}]}",
+  "FirmasData": "{\"revision\":{\"nombre\":\"Ana Torres\",\"firma\":\"[Firma digital]\"},\"jefe\":{\"nombre\":\"Carlos García\",\"firma\":\"[Firma digital]\"}}",
+  "Observaciones": "Proceso completado sin inconvenientes. Se encontraron 3 etiquetas dañadas en total durante el turno."
+}
