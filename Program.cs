@@ -1,5 +1,3 @@
-﻿
-
 using FormBuilder.API.Data;
 using FormBuilder.API.Services;
 using Microsoft.EntityFrameworkCore;
@@ -50,6 +48,15 @@ builder.Services.AddHostedService<AlertBackgroundService>();
 // ✅ Módulo de Personal: validación de reglas de tiempo por proceso
 builder.Services.AddScoped<PersonalValidationService>();
 
+// 📋 Cuadro de cumplimiento (pantalla) y su resumen por correo cada X horas.
+builder.Services.AddScoped<CumplimientoService>();
+builder.Services.AddHostedService<ResumenCumplimientoService>();
+
+// ✅ Regla de horarios (hora de fin vs inicio) para formularios llenados.
+//    Se configura en appsettings.json → "ReglasHorario" (opcional).
+builder.Services.Configure<ReglasHorarioOptions>(builder.Configuration.GetSection("ReglasHorario"));
+builder.Services.AddSingleton<IValidadorHorarios, ValidadorHorarios>();
+
 // ✅ HttpClient para ProxyController
 builder.Services.AddHttpClient(); // ✅ AGREGADO: necesario para IHttpClientFactory
 builder.Services.AddHttpClient("ExternalApi", client =>
@@ -86,5 +93,3 @@ app.MapOpenApi();                        // 4️⃣ /openapi/v1.json (contrato d
 app.MapControllers();                    // 5️⃣ Controladores al final
 
 app.Run();
-
-

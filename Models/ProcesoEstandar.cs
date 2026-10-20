@@ -92,6 +92,13 @@ namespace FormBuilder.API.Models
         /// A qué empresa va el proceso: Frigolab, San Mateo, Ecuatun. Sale del
         /// encabezado y sirve para separar la planificación por destino.
         /// </summary>
+        /// <summary>
+        /// Turno del encabezado (Día / Noche). Va en el reporte de personal:
+        /// sin él, dos filas del mismo proceso y la misma fecha no se
+        /// distinguen entre sí.
+        /// </summary>
+        public string? Turno { get; set; }
+
         public string? Destino { get; set; }
 
         /// <summary>

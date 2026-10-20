@@ -154,24 +154,15 @@ namespace FormBuilder.API.Controllers
         /// <summary>
         /// Columnas de peso producido.
         ///
-        /// Cada formato lo llama distinto: el PD-14 usa "PESO PROCESADO", el
-        /// PD-15 "PESO PROCESO", el PD-06 "TOTAL Lbs NETAS" y el PD-04 "Peso
-        /// Neto Total". Con una lista corta la columna salía vacía en la mitad
-        /// de los formatos.
+                /// Cada formato lo llama distinto: el PD-14 suele usar "PESO
+                /// PROCESADO" o "PESO PRODUCIDO", el PD-15 "PESO PROCESO", el PD-06
+                /// "TOTAL Lbs NETAS" y el PD-04 "Peso Neto Total". Con una lista
+                /// corta la columna salía vacía en la mitad de los formatos.
         /// </summary>
         private static readonly Regex RxPesoProd = new(
             @"total\s*lbs?\s*netas?|lbs?\s*netas?|peso\s*neto\s*total|peso\s*neto|"
-          + @"total\s*producido|peso\s*producci[oó]n|peso\s*proces\w*|"
-          // PRODUCTO TERMINADO, en todas sus formas.
-          //
-          // Cada formato lo escribe distinto: "LIBRAS PRODUCTO TERMINADO" en el
-          // PD-14, "PESO PT" en el PD-19C, "P. TERMINADO" en otros. Buscar solo
-          // la forma larga dejaba la columna vacía en la mitad de los formatos.
-          //
-          // El \b final del abreviado importa: sin él, "PESO PTO SALIDA" o
-          // cualquier palabra que empiece con PT entraría por error.
-          + @"producto\s*terminado|prod\.?\s*terminado|p\.?\s*terminado|"
-          + @"\bp\.?\s*t\.?\b|"
+                    + @"total\s*producido|peso\s*producci[oó]n|peso\s*producid\w*|peso\s*proces\w*|"
+          + @"libras\s*producto\s*terminado|lbs?\s*producto\s*terminado|"
           + @"subtotal\s*\(?\s*lbs?|total\s*lbs?|peso\s*total",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -184,13 +175,6 @@ namespace FormBuilder.API.Controllers
         /// </summary>
         private static readonly Regex RxNoEsPeso = new(
             @"capacidad|materia\s*prima|bruto|tara|merma|desperdicio|da[ñn]ado|devuelto|"
-          // MATERIA PRIMA, también en todas sus formas. Es la ENTRADA del
-          // proceso: sumarla como producción contaría dos veces el mismo
-          // pescado, una al recibirlo y otra al procesarlo.
-          //
-          // Va en las EXCLUSIONES y se evalúa después, así que gana sobre
-          // cualquier coincidencia de arriba.
-          + @"materia\s*prima|mat\.?\s*prima|\bm\.?\s*p\.?\b|"
           + @"por\s*caja|unitario|est[áa]ndar|subproducto",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -266,7 +250,7 @@ namespace FormBuilder.API.Controllers
                     if (!string.IsNullOrWhiteSpace(titulo) && RxTablaPersonal.IsMatch(titulo)) continue;
                     if (!string.IsNullOrWhiteSpace(titulo) && !RxTablaProduccion.IsMatch(titulo)) continue;
 
-                    if (!FilasDeTabla(el, out var filas)) continue;
+                    if (!el.TryGetProperty("data", out var filas) || filas.ValueKind != JsonValueKind.Array) continue;
 
                     foreach (var fila in filas.EnumerateArray())
                     {
@@ -334,10 +318,8 @@ namespace FormBuilder.API.Controllers
                 var titulos = TitulosDeTablas(form);
                 var roles = RolesDeColumnas(form.Template);
 
-                var estructura = ColumnasDeTablas(form);
-
-                return SumarPesoProducido(doc.RootElement, titulos, roles, estructura, soloProduccion: true)
-                    ?? SumarPesoProducido(doc.RootElement, titulos, roles, estructura, soloProduccion: false);
+                return SumarPesoProducido(doc.RootElement, titulos, roles, soloProduccion: true)
+                    ?? SumarPesoProducido(doc.RootElement, titulos, roles, soloProduccion: false);
             }
             catch
             {
@@ -349,22 +331,15 @@ namespace FormBuilder.API.Controllers
             JsonElement raiz,
             Dictionary<string, string> titulos,
             Dictionary<string, string> roles,
-            (Dictionary<string, List<ColumnaPlantilla>> PorId, List<List<ColumnaPlantilla>> PorPosicion) estructura,
             bool soloProduccion)
         {
             decimal total = 0;
             var encontro = false;
-            var posicion = -1;
 
             foreach (var el in raiz.EnumerateArray())
             {
-                posicion++;
                 if (el.ValueKind != JsonValueKind.Object) continue;
-                if (!FilasDeTabla(el, out var filas)) continue;
-
-                // Columna calculada de peso (ej. TOTAL Lbs NETAS): si quedó en 0 se
-                // calcula, y sus entradas de peso (ej. PESO PT) no se suman aparte.
-                var plan = PlanDePeso(el, posicion, estructura);
+                if (!el.TryGetProperty("data", out var filas) || filas.ValueKind != JsonValueKind.Array) continue;
 
                 var titulo = TituloDeTabla(el, titulos);
                 var tieneTitulo = !string.IsNullOrWhiteSpace(titulo);
@@ -376,61 +351,32 @@ namespace FormBuilder.API.Controllers
                     || !tieneTitulo
                     || (RxTablaProduccion.IsMatch(titulo!) && !RxMateriaPrima.IsMatch(titulo!));
 
-                bool Cuenta(string nombre)
-                {
-                    var rol = roles.TryGetValue(nombre.Trim(), out var r) ? r : null;
-                    if (rol == "pesoProducido") return true;     // la marca manda
-                    if (rol != null) return false;               // marcada como otra cosa
-                    return tablaValida && RxPesoProd.IsMatch(nombre) && !RxNoEsPeso.IsMatch(nombre);
-                }
-
                 foreach (var fila in filas.EnumerateArray())
                 {
                     if (fila.ValueKind != JsonValueKind.Object) continue;
-                    var textos = plan.TieneFormulas ? TextosDeFila(fila) : null;
-
                     foreach (var prop in fila.EnumerateObject())
                     {
-                        if (plan.EsEntrada(prop.Name)) continue;   // ya está dentro de la calculada
-                        if (!Cuenta(prop.Name)) continue;
+                        var rol = roles.TryGetValue(prop.Name.Trim(), out var r) ? r : null;
+
+                        bool cuenta;
+                        if (rol == "pesoProducido")
+                            cuenta = true;                       // la marca manda
+                        else if (rol != null)
+                            cuenta = false;                      // marcada como otra cosa
+                        else
+                            cuenta = tablaValida
+                                  && RxPesoProd.IsMatch(prop.Name)
+                                  && !RxNoEsPeso.IsMatch(prop.Name);
+
+                        if (!cuenta) continue;
 
                         var v = ParseDecimal(prop.Value);
-                        if (textos != null && plan.FormulaDe(prop.Name) != null)
-                            v = plan.PesoCalculado(prop.Name, v, textos);
                         if (v > 0) { total += v; encontro = true; }
-                    }
-
-                    // Columna calculada que la fila ni siquiera trae.
-                    if (textos != null)
-                    {
-                        foreach (var ausente in plan.CalculadasAusentes(textos.Keys))
-                        {
-                            if (!Cuenta(ausente)) continue;
-                            var v = plan.PesoCalculado(ausente, 0, textos);
-                            if (v > 0) { total += v; encontro = true; }
-                        }
                     }
                 }
             }
 
             return encontro ? total : (decimal?)null;
-        }
-
-        /// <summary>
-        /// Filas de una tabla de BodyData. Si trae "rows" (lo que se ve y se edita
-        /// en Ver / Editar Formulario Llenado) manda "rows"; si no, "data".
-        /// Registros guardados con las dos listas distintas mostraban en el
-        /// reporte filas que ya se habían quitado y no las que se agregaron.
-        /// </summary>
-        private static bool FilasDeTabla(JsonElement el, out JsonElement filas)
-        {
-            if (el.ValueKind == JsonValueKind.Object)
-            {
-                if (el.TryGetProperty("rows", out filas) && filas.ValueKind == JsonValueKind.Array) return true;
-                if (el.TryGetProperty("data", out filas) && filas.ValueKind == JsonValueKind.Array) return true;
-            }
-            filas = default;
-            return false;
         }
 
         /// <summary>Id de un elemento como texto: la plantilla usa números y textos.</summary>
@@ -452,132 +398,6 @@ namespace FormBuilder.API.Controllers
         /// (tablas borradas o renombradas después), del TemplateSnapshot que se
         /// guardó cuando se llenó el formulario.
         /// </summary>
-        /// <summary>
-        /// Columnas de cada tabla según la plantilla: por id y por posición.
-        /// Primero la plantilla actual; los ids que ya no están se toman del
-        /// snapshot guardado con el formulario.
-        /// </summary>
-        private static (Dictionary<string, List<ColumnaPlantilla>> PorId, List<List<ColumnaPlantilla>> PorPosicion)
-            ColumnasDeTablas(FilledForm form)
-        {
-            var porId = new Dictionary<string, List<ColumnaPlantilla>>(StringComparer.OrdinalIgnoreCase);
-            var porPosicion = new List<List<ColumnaPlantilla>>();
-
-            static string? Texto(JsonElement o, string prop) =>
-                o.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-            void CargarLista(JsonElement lista, bool conPosiciones)
-            {
-                if (lista.ValueKind != JsonValueKind.Array) return;
-                foreach (var el in lista.EnumerateArray())
-                {
-                    var cols = new List<ColumnaPlantilla>();
-                    if (el.ValueKind == JsonValueKind.Object
-                        && el.TryGetProperty("columns", out var c) && c.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var col in c.EnumerateArray())
-                        {
-                            if (col.ValueKind != JsonValueKind.Object) continue;
-                            cols.Add(new ColumnaPlantilla
-                            {
-                                Label = Texto(col, "label") ?? Texto(col, "header") ?? Texto(col, "name"),
-                                Tipo = Texto(col, "type"),
-                                Formula = Texto(col, "formula"),
-                                Rol = Texto(col, "rol"),
-                            });
-                        }
-                    }
-                    if (conPosiciones) porPosicion.Add(cols);
-                    var id = el.ValueKind == JsonValueKind.Object ? IdDeElemento(el) : null;
-                    if (!string.IsNullOrWhiteSpace(id) && !porId.ContainsKey(id!)) porId[id!] = cols;
-                }
-            }
-
-            void CargarJson(string? json, bool conPosiciones)
-            {
-                if (string.IsNullOrWhiteSpace(json)) return;
-                try
-                {
-                    using var doc = JsonDocument.Parse(json);
-                    var raiz = doc.RootElement;
-                    if (raiz.ValueKind == JsonValueKind.String)
-                    {
-                        using var interno = JsonDocument.Parse(raiz.GetString() ?? "[]");
-                        CargarLista(interno.RootElement, conPosiciones);
-                    }
-                    else CargarLista(raiz, conPosiciones);
-                }
-                catch { /* JSON corrupto: se sigue con lo que haya */ }
-            }
-
-            CargarJson(form.Template?.BodyElements, conPosiciones: true);
-
-            if (!string.IsNullOrWhiteSpace(form.TemplateSnapshot))
-            {
-                try
-                {
-                    using var snap = JsonDocument.Parse(form.TemplateSnapshot);
-                    if (snap.RootElement.ValueKind == JsonValueKind.Object)
-                    {
-                        foreach (var p in snap.RootElement.EnumerateObject())
-                        {
-                            if (!p.Name.Equals("BodyElements", StringComparison.OrdinalIgnoreCase)) continue;
-                            if (p.Value.ValueKind == JsonValueKind.String) CargarJson(p.Value.GetString(), conPosiciones: false);
-                            else CargarLista(p.Value, conPosiciones: false);
-                            break;
-                        }
-                    }
-                }
-                catch { /* snapshot corrupto */ }
-            }
-
-            return (porId, porPosicion);
-        }
-
-        /// <summary>¿La columna cuenta como peso producido? La marca manda; sin marca, el nombre.</summary>
-        private static bool EsColumnaDePeso(string etiqueta, string? rol)
-        {
-            if (rol == "pesoProducido") return true;
-            if (!string.IsNullOrWhiteSpace(rol)) return false;
-            return RxPesoProd.IsMatch(etiqueta) && !RxNoEsPeso.IsMatch(etiqueta);
-        }
-
-        /// <summary>
-        /// Cómo sacar el peso de una tabla con columna calculada (ver
-        /// CalculoPesoTabla). Sin columnas calculadas de peso devuelve "Ninguno".
-        /// </summary>
-        private static CalculoPesoTabla PlanDePeso(
-            JsonElement tabla, int posicion,
-            (Dictionary<string, List<ColumnaPlantilla>> PorId, List<List<ColumnaPlantilla>> PorPosicion) estructura)
-        {
-            var id = IdDeElemento(tabla);
-            List<ColumnaPlantilla>? cols = null;
-            if (id != null) estructura.PorId.TryGetValue(id, out cols);
-            if (cols == null && id == null && posicion >= 0 && posicion < estructura.PorPosicion.Count)
-                cols = estructura.PorPosicion[posicion];
-            return cols == null || cols.Count == 0
-                ? CalculoPesoTabla.Ninguno
-                : CalculoPesoTabla.Crear(cols, EsColumnaDePeso);
-        }
-
-        /// <summary>Celdas de una fila como texto, para evaluar fórmulas.</summary>
-        private static Dictionary<string, string> TextosDeFila(JsonElement fila)
-        {
-            var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (fila.ValueKind != JsonValueKind.Object) return d;
-            foreach (var p in fila.EnumerateObject())
-            {
-                if (d.ContainsKey(p.Name)) continue;
-                d[p.Name] = p.Value.ValueKind switch
-                {
-                    JsonValueKind.String => p.Value.GetString() ?? "",
-                    JsonValueKind.Number => p.Value.GetRawText(),
-                    _ => ""
-                };
-            }
-            return d;
-        }
-
         private static Dictionary<string, string> TitulosDeTablas(FilledForm form)
         {
             var titulos = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -657,6 +477,11 @@ namespace FormBuilder.API.Controllers
         /// Se buscan varias formas porque no todos los formatos la llaman
         /// igual: "ESPECIE" en la mayoría, "ESPECIE DECLARADA" en el PD-03.
         /// </summary>
+        // El turno sale del encabezado. Se aceptan las variantes que usan las
+        // distintas plantillas para no obligar a renombrar nada.
+        private static readonly string[] CamposTurno =
+            { "TURNO", "TURNO ASIGNADO", "JORNADA", "TURNO DE TRABAJO", "TIPO DE TURNO" };
+
         private static readonly string[] CamposEspecie =
             { "ESPECIE", "ESPECIE DECLARADA", "ESPECIE / PRESENTACION", "TIPO DE ESPECIE" };
 
@@ -798,7 +623,7 @@ namespace FormBuilder.API.Controllers
                     foreach (var el in doc.RootElement.EnumerateArray())
                     {
                         if (el.ValueKind != JsonValueKind.Object) continue;
-                        if (!FilasDeTabla(el, out var filas)) continue;
+                        if (!el.TryGetProperty("data", out var filas) || filas.ValueKind != JsonValueKind.Array) continue;
 
                         var titulo = TituloDeTabla(el, titulos);
                         var tieneTitulo = !string.IsNullOrWhiteSpace(titulo);
@@ -882,6 +707,116 @@ namespace FormBuilder.API.Controllers
         /// A qué empresa va el proceso: Frigolab, San Mateo, Ecuatun.
         /// Sale del encabezado; vacío si el formulario no lo declara.
         /// </summary>
+        /// <summary>
+        /// Turno del formulario (Día / Noche). Calidad lo pidió visible en el
+        /// reporte de personal: sin él, dos filas del mismo proceso y la misma
+        /// fecha no se distinguen entre sí.
+        /// </summary>
+        private static string? TurnoDelFormulario(FilledForm form)
+        {
+            if (string.IsNullOrWhiteSpace(form.HeaderData)) return null;
+
+            try
+            {
+                var header = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.HeaderData);
+                if (header == null) return null;
+
+                // Primero la coincidencia exacta; después, cualquier clave que
+                // CONTENGA "turno" o "jornada". Cada plantilla lo escribe a su
+                // manera («TURNO», «Turno asignado», «TURNO:», «Jornada»), y
+                // exigir el nombre exacto dejaba la columna vacía.
+                foreach (var buscado in CamposTurno)
+                {
+                    foreach (var (clave, valor) in header)
+                    {
+                        if (ClaveNormalizada(clave) != buscado) continue;
+                        var texto = TextoDe(valor);
+                        if (!string.IsNullOrWhiteSpace(texto)) return NormalizarTurno(texto!);
+                    }
+                }
+
+                foreach (var (clave, valor) in header)
+                {
+                    var limpia = ClaveNormalizada(clave);
+                    if (!limpia.Contains("TURNO") && !limpia.Contains("JORNADA")) continue;
+                    var texto = TextoDe(valor);
+                    if (!string.IsNullOrWhiteSpace(texto)) return NormalizarTurno(texto!);
+                }
+            }
+            catch { /* HeaderData corrupto: se devuelve vacío */ }
+
+            return null;
+        }
+
+        /// <summary>Clave comparable: sin tildes, sin signos y en mayúsculas.</summary>
+        private static string ClaveNormalizada(string clave)
+        {
+            var t = clave.Trim().ToUpperInvariant()
+                .Replace("Í", "I").Replace("Á", "A").Replace("Ó", "O")
+                .Replace("É", "E").Replace("Ú", "U").Replace("Ñ", "N");
+            return Regex.Replace(t, @"[^A-Z0-9]+", " ").Trim();
+        }
+
+        private static string? TextoDe(JsonElement valor) =>
+            valor.ValueKind switch
+            {
+                JsonValueKind.String => valor.GetString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                JsonValueKind.Object or JsonValueKind.Array => null,
+                _ => valor.ToString(),
+            };
+
+        /// <summary>
+        /// Turno escrito en una COLUMNA de tabla. El PD-15 anota el turno por
+        /// renglón, no en el encabezado; sin esto esos registros quedaban sin
+        /// turno aunque el dato estuviera cargado.
+        /// </summary>
+        private static string? TurnoDeLasTablas(FilledForm form)
+        {
+            if (string.IsNullOrWhiteSpace(form.BodyData)) return null;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(form.BodyData);
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) return null;
+
+                foreach (var elemento in doc.RootElement.EnumerateArray())
+                {
+                    if (elemento.ValueKind != JsonValueKind.Object) continue;
+                    if (!elemento.TryGetProperty("data", out var filas) || filas.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    foreach (var fila in filas.EnumerateArray())
+                    {
+                        if (fila.ValueKind != JsonValueKind.Object) continue;
+                        foreach (var celda in fila.EnumerateObject())
+                        {
+                            var limpia = ClaveNormalizada(celda.Name);
+                            if (!limpia.Contains("TURNO") && !limpia.Contains("JORNADA")) continue;
+                            var texto = TextoDe(celda.Value);
+                            if (!string.IsNullOrWhiteSpace(texto)) return NormalizarTurno(texto!);
+                        }
+                    }
+                }
+            }
+            catch (JsonException) { /* BodyData corrupto: se devuelve vacío */ }
+
+            return null;
+        }
+
+        /// <summary>«DIA», «dia», «1» y «D» son el mismo turno: se unifica.</summary>
+        private static string NormalizarTurno(string texto)
+        {
+            var t = texto.Trim();
+            var comparable = t.ToUpperInvariant()
+                .Replace("Í", "I").Replace("Á", "A").Replace("Ó", "O").Replace("É", "E");
+
+            if (comparable is "D" or "1" || comparable.StartsWith("DIA")) return "Día";
+            if (comparable is "N" or "2" || comparable.StartsWith("NOCHE") || comparable.StartsWith("NOC")) return "Noche";
+            if (comparable.StartsWith("TARDE")) return "Tarde";
+            return t;   // cualquier otro valor se muestra tal cual se escribió
+        }
+
         private static string? DestinoDelFormulario(FilledForm form)
         {
             if (string.IsNullOrWhiteSpace(form.HeaderData)) return null;
@@ -932,7 +867,7 @@ namespace FormBuilder.API.Controllers
                 foreach (var el in doc.RootElement.EnumerateArray())
                 {
                     if (el.ValueKind != JsonValueKind.Object) continue;
-                    if (!FilasDeTabla(el, out var filas)) continue;
+                    if (!el.TryGetProperty("data", out var filas) || filas.ValueKind != JsonValueKind.Array) continue;
 
                     foreach (var fila in filas.EnumerateArray())
                     {
@@ -1586,11 +1521,24 @@ namespace FormBuilder.API.Controllers
                     {
                         if (c.ValueKind != JsonValueKind.Object) continue;
 
-                        var rol = c.TryGetProperty("rol", out var r) ? r.GetString() : null;
-                        if (string.IsNullOrWhiteSpace(rol)) continue;
-
                         var label = c.TryGetProperty("label", out var l) ? l.GetString() : null;
                         if (string.IsNullOrWhiteSpace(label)) continue;
+
+                        // 📊 Check «Mostrar total en Personal» (enPersonal).
+                        //
+                        // Es la marca explícita que reemplaza a la detección por
+                        // nombre: la columna queda como peso producido aunque se
+                        // llame como sea. Manda sobre el rol, porque el usuario lo
+                        // eligió a propósito desde «Editar plantilla».
+                        if (c.TryGetProperty("enPersonal", out var enPersonal) &&
+                            enPersonal.ValueKind == JsonValueKind.True)
+                        {
+                            roles[label!.Trim()] = "pesoProducido";
+                            continue;
+                        }
+
+                        var rol = c.TryGetProperty("rol", out var r) ? r.GetString() : null;
+                        if (string.IsNullOrWhiteSpace(rol)) continue;
 
                         roles[label!.Trim()] = rol!.Trim();
                     }
@@ -1675,12 +1623,9 @@ namespace FormBuilder.API.Controllers
             // fila de la tabla de personal es su propio registro.
             var filasPersonal = new List<(TimeSpan? Ini, TimeSpan? Fin, int Planta, int Externo, decimal? Peso, string? Obs, string? Proceso, bool EsInicio, bool EsCierre)>();
             bool encontrado = false;
-            var estructura = ColumnasDeTablas(form);
-            var posicion = -1;
 
             foreach (var element in formData.EnumerateArray())
             {
-                posicion++;
                 if (element.ValueKind != JsonValueKind.Object)
                     continue;
 
@@ -1689,7 +1634,7 @@ namespace FormBuilder.API.Controllers
                     typeEl.GetString() != "table")
                     continue;
 
-                if (!FilasDeTabla(element, out var dataArr))
+                if (!element.TryGetProperty("data", out var dataArr) || dataArr.ValueKind != JsonValueKind.Array)
                     continue;
 
                 var filas = dataArr.EnumerateArray().Where(r => r.ValueKind == JsonValueKind.Object).ToList();
@@ -1716,15 +1661,6 @@ namespace FormBuilder.API.Controllers
 
                 encontrado = true;
 
-                // ⚖️ LIBRAS NETAS EN 0 EN EL REPORTE DE PERSONAL
-                // La columna calculada (ej. LIBRAS NETAS = PESO PT o CAJAS ×
-                // CAPACIDAD) quedó guardada en 0 en muchos registros: la pantalla
-                // la calcula al dibujar, pero no siempre la guardaba. Aquí se
-                // calcula con la fórmula de la plantilla cuando está en 0, y las
-                // columnas de peso que la alimentan (PESO PT) no se suman aparte,
-                // porque eso contaba el mismo peso dos veces.
-                var plan = PlanDePeso(element, posicion, estructura);
-
                 foreach (var fila in filas)
                 {
                     int planta = 0, externo = 0;
@@ -1732,23 +1668,10 @@ namespace FormBuilder.API.Controllers
                     decimal? peso = null;
                     string? obs = null, proc = null;
                     bool esInicio = false, esCierre = false;
-                    var textos = plan.TieneFormulas ? TextosDeFila(fila) : null;
 
                     foreach (var prop in fila.EnumerateObject())
                     {
                         var nombre = prop.Name;
-
-                        // ── 0º: peso calculado y sus entradas ─────────────
-                        if (textos != null)
-                        {
-                            if (plan.EsEntrada(nombre)) continue;
-                            if (plan.FormulaDe(nombre) != null)
-                            {
-                                var vf = plan.PesoCalculado(nombre, ParseDecimal(prop.Value), textos);
-                                if (vf > 0) peso = (peso ?? 0) + vf;
-                                continue;
-                            }
-                        }
 
                         // ── 1º: el rol declarado en la plantilla ──────────
                         var rol = RolDe(nombre);
@@ -1825,16 +1748,6 @@ namespace FormBuilder.API.Controllers
                         }
                     }
 
-                    // Columna calculada de peso que la fila ni siquiera trae.
-                    if (textos != null)
-                    {
-                        foreach (var ausente in plan.CalculadasAusentes(textos.Keys))
-                        {
-                            var vf = plan.PesoCalculado(ausente, 0, textos);
-                            if (vf > 0) peso = (peso ?? 0) + vf;
-                        }
-                    }
-
                     // ── Filas que no aportan ─────────────────────────────
                     //
                     // El operario agrega renglones de más y los deja a medias.
@@ -1872,6 +1785,7 @@ namespace FormBuilder.API.Controllers
             var codigo   = form.Template?.Codigo ?? "";
             var proceso  = ProcesoDelFormulario(form);
             var destino  = DestinoDelFormulario(form);
+            var turno    = TurnoDelFormulario(form) ?? TurnoDeLasTablas(form);
             var lote     = LoteDelFormulario(form);
             // Encabezado primero; si no la tiene (PD-05/06/07/11), de las tablas.
             var especie  = EspecieDelFormulario(form) ?? EspecieDeLasTablas(form);
@@ -1900,11 +1814,16 @@ namespace FormBuilder.API.Controllers
             // Suma del peso de todas las franjas. Si ninguna fila lo trae, se
             // toma el de la tabla de producción: hay formatos que registran el
             // peso ahí y no por franja.
-            // El peso puede estar en la tabla de personal (una celda por franja)
-            // o en la de producción (una sola vez para todo el formulario).
             var pesoDeFilas = filasPersonal.Where(f => f.Peso is > 0).Sum(f => f.Peso!.Value);
-            var pesoDeTabla = PesoDeProduccion(form) ?? 0;
-            var pesoTotal = pesoDeFilas > 0 ? pesoDeFilas : pesoDeTabla;
+            var pesoTotal = pesoDeFilas > 0 ? pesoDeFilas : (PesoDeProduccion(form) ?? 0);
+
+            // ¿El peso viene por franja o solo en la tabla de producción?
+            // Si NINGUNA franja trae su peso, todas las filas muestran el peso
+            // del formulario (como en el reporte manual: el #2285 con tres
+            // franjas lleva 21.017 en las tres). Antes solo se ponía cuando
+            // había UNA franja, y con dos o más la columna salía vacía.
+            // Para sumar en Excel sin duplicar está "Total producido (sumable)".
+            var pesoSoloEnProduccion = pesoDeFilas == 0 && pesoTotal > 0;
 
             for (var idx = 0; idx < filasPersonal.Count; idx++)
             {
@@ -1925,6 +1844,7 @@ namespace FormBuilder.API.Controllers
                     Destino = destino,
                     Lote = lote,
                     Especie = especie,
+                    Turno = turno,
                     Fecha = fecha,
 
                     PersonalPlanta = f.Planta,
@@ -1933,21 +1853,10 @@ namespace FormBuilder.API.Controllers
                     HoraFin = f.Fin,
                     HorasTrabajadas = CalcularHoras(f.Ini, f.Fin),
 
-                    // El peso de ESTA franja si la fila lo trae.
-                    //
-                    // Si no, el del formulario. Antes eso solo se hacía cuando
-                    // había UNA franja, para no repartir un total entre varias e
-                    // inventar un dato — pero el resultado era peor: formularios
-                    // como el #2365, con 4.100 Lbs registradas en la tabla de
-                    // proceso, salían con la columna vacía solo por tener tres
-                    // franjas de personal.
-                    //
-                    // Ahora se muestra el total del formulario, igual en todas
-                    // sus filas. No es el peso de esa franja y no hay forma de
-                    // saberlo —el operario no lo desglosó—, pero decir "no hay
-                    // peso" cuando sí lo hay es un error mayor que repetir el
-                    // total. Para sumar sin duplicar está PesoTotalUnico.
-                    PesoProduccion = f.Peso ?? (pesoDeTabla > 0 ? pesoDeTabla : (decimal?)null),
+                    // El peso de ESTA franja. Si ninguna franja lo trae, el
+                    // del formulario en todas. Si unas lo traen y otras no
+                    // (PD-15), la que no lo trae queda vacía: no se inventa.
+                    PesoProduccion = f.Peso ?? (pesoSoloEnProduccion ? pesoTotal : (decimal?)null),
 
 
                     Observaciones = f.Obs,

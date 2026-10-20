@@ -124,6 +124,14 @@ namespace FormBuilder.API.Controllers
                     existingConfig.LockThresholdHours = config.LockThresholdHours;
                     existingConfig.SenderEmail = config.SenderEmail;
                     existingConfig.SenderName = config.SenderName;
+
+                    // 📧 Resumen de cumplimiento cada X horas
+                    existingConfig.EnableResumenCumplimiento = config.EnableResumenCumplimiento;
+                    existingConfig.ResumenCadaHoras = config.ResumenCadaHoras;
+                    existingConfig.ResumenDiasAtras = config.ResumenDiasAtras;
+                    existingConfig.ResumenIncluirFinDeSemana = config.ResumenIncluirFinDeSemana;
+                    existingConfig.ResumenAResponsables = config.ResumenAResponsables;
+                    existingConfig.ResumenRecipients = config.ResumenRecipients;
                 }
 
                 await _context.SaveChangesAsync();

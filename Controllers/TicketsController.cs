@@ -10,6 +10,13 @@ namespace FormBuilder.API.Controllers
     [Route("api/[controller]")]
     public class TicketsController : ControllerBase
     {
+        /// <summary>
+        /// Regla general: a quién van los mensajes de quien no tiene una regla
+        /// propia. Se guarda como una fila más de TicketRutas, con este valor
+        /// en lugar de un correo.
+        /// </summary>
+        public const string DESTINATARIO_POR_DEFECTO = "*";
+
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
         private readonly ILogger<TicketsController> _logger;
@@ -24,12 +31,28 @@ namespace FormBuilder.API.Controllers
         // GET /api/Tickets
         // Devuelve todos los tickets; el filtrado "míos" vs "todos" se hace en el frontend,
         // igual que el resto de los módulos de esta app (no hay autorización a nivel de servidor).
+        /// <summary>
+        /// Mensajes. Con ?para=correo devuelve SOLO los de esa persona: los que
+        /// se le asignaron y los que no tienen destinatario (van a todos).
+        /// Sin el parámetro, o con todos=true, devuelve todo como siempre.
+        /// </summary>
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<Ticket>>> GetTickets()
+        public async Task<ActionResult<IEnumerable<Ticket>>> GetTickets(
+            [FromQuery] string? para, [FromQuery] bool todos = false)
         {
             try
             {
-                var tickets = await _context.Tickets
+                var consulta = _context.Tickets.AsQueryable();
+
+                var destinatario = (para ?? "").Trim().ToLower();
+                if (!todos && destinatario.Length > 0)
+                {
+                    consulta = consulta.Where(t =>
+                        t.AsignadoAEmail == null || t.AsignadoAEmail == ""
+                        || t.AsignadoAEmail.ToLower() == destinatario);
+                }
+
+                var tickets = await consulta
                     .OrderByDescending(t => t.CreadoEn)
                     .ToListAsync();
 
@@ -56,6 +79,27 @@ namespace FormBuilder.API.Controllers
                 ticket.Id = 0;
                 ticket.CreadoEn = DateTime.Now;
                 ticket.Estado = "abierto";
+
+                // 📬 Si el operario tiene una regla, el mensaje va a esa persona
+                //    y no queda a la vista de todos los administradores.
+                var correo = (ticket.CreadoPorEmail ?? "").Trim().ToLower();
+
+                // Primero la regla de esa persona; si no tiene, la regla general
+                // (DESTINATARIO_POR_DEFECTO). Así los mensajes llegan a UNA sola
+                // persona y el aviso rojo no le aparece a todos los administradores.
+                var ruta = correo.Length > 0
+                    ? await _context.TicketRutas.FirstOrDefaultAsync(r => r.Activa && r.UsuarioEmail.ToLower() == correo)
+                    : null;
+
+                ruta ??= await _context.TicketRutas
+                    .FirstOrDefaultAsync(r => r.Activa && r.UsuarioEmail == DESTINATARIO_POR_DEFECTO);
+
+                if (ruta != null)
+                {
+                    ticket.AsignadoAEmail = ruta.DestinatarioEmail;
+                    ticket.AsignadoANombre = ruta.DestinatarioNombre;
+                    _logger.LogInformation("📬 Mensaje de {De} asignado a {Para}", correo, ruta.DestinatarioEmail);
+                }
                 ticket.RespuestaAdmin = null;
                 ticket.RespondidoPor = null;
                 ticket.RespondidoEn = null;
@@ -99,6 +143,69 @@ namespace FormBuilder.API.Controllers
                 _logger.LogError(ex, "Error al actualizar ticket {Id}", id);
                 return StatusCode(500, new { message = "Error al actualizar ticket" });
             }
+        }
+
+        // ── 📬 Reglas de reparto ────────────────────────────────────────
+
+        /// <summary>Reglas: de quién son los mensajes y a quién le llegan.</summary>
+        [HttpGet("rutas")]
+        public async Task<ActionResult<IEnumerable<TicketRuta>>> GetRutas()
+        {
+            var rutas = await _context.TicketRutas.AsNoTracking()
+                .OrderBy(r => r.UsuarioNombre).ThenBy(r => r.UsuarioEmail)
+                .ToListAsync();
+            return Ok(rutas);
+        }
+
+        /// <summary>
+        /// Crea o cambia la regla de un operario. Si el destinatario viene
+        /// vacío, se quita la regla y sus mensajes vuelven a ir a todos.
+        /// </summary>
+        [HttpPut("rutas")]
+        public async Task<ActionResult> GuardarRuta([FromBody] TicketRuta ruta)
+        {
+            var usuario = (ruta?.UsuarioEmail ?? "").Trim();
+            if (usuario.Length == 0)
+                return BadRequest(new { message = "Falta el correo del operario." });
+
+            var existente = await _context.TicketRutas
+                .FirstOrDefaultAsync(r => r.UsuarioEmail.ToLower() == usuario.ToLower());
+
+            var destinatario = (ruta!.DestinatarioEmail ?? "").Trim();
+            if (destinatario.Length == 0)
+            {
+                if (existente != null)
+                {
+                    _context.TicketRutas.Remove(existente);
+                    await _context.SaveChangesAsync();
+                }
+                return Ok(new { message = $"Los mensajes de {usuario} vuelven a ir a todos los administradores." });
+            }
+
+            if (existente == null)
+            {
+                _context.TicketRutas.Add(new TicketRuta
+                {
+                    UsuarioEmail = usuario,
+                    UsuarioNombre = ruta.UsuarioNombre,
+                    DestinatarioEmail = destinatario,
+                    DestinatarioNombre = ruta.DestinatarioNombre,
+                    Activa = true,
+                    ActualizadoPor = ruta.ActualizadoPor,
+                });
+            }
+            else
+            {
+                existente.UsuarioNombre = ruta.UsuarioNombre;
+                existente.DestinatarioEmail = destinatario;
+                existente.DestinatarioNombre = ruta.DestinatarioNombre;
+                existente.Activa = true;
+                existente.ActualizadoPor = ruta.ActualizadoPor;
+                existente.UpdatedAt = DateTime.Now;
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { message = $"Los mensajes de {usuario} le llegarán a {destinatario}." });
         }
 
         // GET /api/Tickets/viewers

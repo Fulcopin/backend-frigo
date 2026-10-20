@@ -135,6 +135,9 @@ namespace FormBuilder.API.Controllers
                             proceso = form.Template?.Proceso ?? form.Template?.Area ?? "Sin proceso",
                             filledBy = form.FilledBy ?? "N/A",
                             createdAt = form.CreatedAt,
+                            // Destino del encabezado: la pantalla de consumos lo
+                            // muestra junto al numero de formulario.
+                            destino = DestinoDelFormulario(form) ?? "",
                             esBorrador = false,
                             totalSections = allSections.Count,
                             sections = allSections
@@ -198,6 +201,7 @@ namespace FormBuilder.API.Controllers
                             proceso = plantilla?.Proceso ?? plantilla?.Area ?? "Sin proceso",
                             filledBy = borrador.UserName ?? "N/A",
                             createdAt = borrador.CreatedAt,
+                            destino = DestinoDelFormulario(comoFormulario) ?? "",
                             esBorrador = true,
                             totalSections = seccionesBorrador.Count,
                             sections = seccionesBorrador
@@ -1109,6 +1113,39 @@ namespace FormBuilder.API.Controllers
                     return value.GetString();
                 }
             }
+
+            return null;
+        }
+
+        /// <summary>Nombres con los que el encabezado puede llamar al destino.</summary>
+        private static readonly string[] CamposDestinoConsumo = { "DESTINO", "EMPRESA", "CLIENTE" };
+
+        /// <summary>
+        /// A qué empresa va el proceso: Frigolab, San Mateo, Ecuatun.
+        /// Sale del encabezado del formulario; vacío si no lo declara.
+        /// Mismo criterio que el reporte de Personal, para que las dos
+        /// pantallas muestren siempre el mismo destino.
+        /// </summary>
+        private static string? DestinoDelFormulario(FilledForm form)
+        {
+            if (string.IsNullOrWhiteSpace(form.HeaderData)) return null;
+
+            try
+            {
+                var header = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(form.HeaderData);
+                if (header == null) return null;
+
+                foreach (var buscado in CamposDestinoConsumo)
+                {
+                    foreach (var (clave, valor) in header)
+                    {
+                        if (clave.ToUpperInvariant().Trim() != buscado) continue;
+                        var texto = valor.ValueKind == JsonValueKind.String ? valor.GetString() : valor.ToString();
+                        if (!string.IsNullOrWhiteSpace(texto)) return texto!.Trim();
+                    }
+                }
+            }
+            catch { /* HeaderData corrupto: se devuelve vacío */ }
 
             return null;
         }

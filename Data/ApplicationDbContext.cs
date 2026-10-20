@@ -59,6 +59,24 @@ namespace FormBuilder.API.Data
         public DbSet<PersonalRegistro> PersonalRegistros { get; set; }
         public DbSet<ProcesoEstandar> ProcesoEstandares { get; set; }
 
+        // 📢 NOVEDADES: avisos del administrador que todos ven antes de entrar,
+        // y la constancia de quién leyó cada uno.
+        // Tablas: backend-frigo/Migrations/CreateNovedadesTables.sql
+        public DbSet<Novedad> Novedades { get; set; }
+        public DbSet<NovedadLectura> NovedadesLecturas { get; set; }
+
+        // ✍️ Firmas con PIN puestas en celdas (columna tipo "firmaPin").
+        // Tabla: backend-frigo/Migrations/CreateFirmasCeldaTable.sql
+        public DbSet<FirmaCelda> FirmasCelda { get; set; }
+
+        // 🏭 Catálogo de actividades de proceso (antes estaba en el código).
+        // Tabla: backend-frigo/Migrations/CreateActividadesProceso.sql
+        public DbSet<ActividadProceso> ActividadesProceso { get; set; }
+
+        // 📬 A quién le llegan los mensajes de cada operario.
+        // Tabla: backend-frigo/Migrations/AddTicketRutas.sql
+        public DbSet<TicketRuta> TicketRutas { get; set; }
+
         // ANTERIOR: Este DbSet ya no es necesario.
         // public DbSet<TableRow> TableRows { get; set; }
 
@@ -81,6 +99,30 @@ namespace FormBuilder.API.Data
             modelBuilder.Entity<ConsultaPlan>()
                 .HasIndex(c => new { c.Actividad, c.Grupo, c.Clave })
                 .IsUnique();
+
+            // Una sola lectura por usuario y novedad; al borrar la novedad se
+            // borran sus lecturas.
+            modelBuilder.Entity<NovedadLectura>()
+                .HasIndex(l => new { l.NovedadId, l.Usuario })
+                .IsUnique();
+
+            modelBuilder.Entity<TicketRuta>()
+                .HasIndex(r => r.UsuarioEmail)
+                .IsUnique();
+
+            modelBuilder.Entity<ActividadProceso>()
+                .HasIndex(a => a.Nombre)
+                .IsUnique();
+
+            modelBuilder.Entity<FirmaCelda>()
+                .ToTable("FirmasCelda")
+                .HasIndex(f => f.Codigo)
+                .IsUnique();
+            modelBuilder.Entity<NovedadLectura>()
+                .HasOne<Novedad>()
+                .WithMany()
+                .HasForeignKey(l => l.NovedadId)
+                .OnDelete(DeleteBehavior.Cascade);
         }
     }
 }

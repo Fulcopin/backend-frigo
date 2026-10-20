@@ -41,6 +41,22 @@ namespace FormBuilder.API.Models
         public bool EnableTemplateChangeAlerts { get; set; } = false;
         public string TemplateChangeRecipients { get; set; } = "[]";
         public int LockThresholdHours { get; set; } = 36;
+        // 📧 Resumen de cumplimiento (qué registros faltan y cuáles no están
+        //    firmados). Se manda cada ResumenCadaHoras a los destinatarios
+        //    fijos y, si se pide, a cada responsable con lo suyo.
+        public bool EnableResumenCumplimiento { get; set; } = false;
+        /// <summary>Cada cuántas horas se envía (10 por defecto).</summary>
+        public int ResumenCadaHoras { get; set; } = 10;
+        /// <summary>Cuántos días hacia atrás se revisan.</summary>
+        public int ResumenDiasAtras { get; set; } = 7;
+        /// <summary>¿El sábado y el domingo también se exigen?</summary>
+        public bool ResumenIncluirFinDeSemana { get; set; } = true;
+        /// <summary>Además de los destinatarios fijos, avisar a cada responsable y sus reemplazos.</summary>
+        public bool ResumenAResponsables { get; set; } = true;
+        public string ResumenRecipients { get; set; } = "[]";
+        /// <summary>Última vez que se envió; evita repetir al reiniciar la API.</summary>
+        public DateTime? UltimoResumenCumplimiento { get; set; }
+
         public string SenderEmail { get; set; } = "alertas@frigolab.com";
         public string SenderName { get; set; } = "Frigolab Alertas";
     }

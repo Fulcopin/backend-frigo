@@ -22,6 +22,49 @@ namespace FormBuilder.API.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("FormBuilder.API.Models.ActividadProceso", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Activa")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("Camaron")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Orden")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("Pescado")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Nombre")
+                        .IsUnique();
+
+                    b.ToTable("ActividadesProceso");
+                });
+
             modelBuilder.Entity("FormBuilder.API.Models.Alert", b =>
                 {
                     b.Property<int>("Id")
@@ -76,6 +119,48 @@ namespace FormBuilder.API.Migrations
                     b.ToTable("Alerts");
                 });
 
+            modelBuilder.Entity("FormBuilder.API.Models.AlertConfigTemplate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ActualizadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DailyCheckTime")
+                        .HasMaxLength(5)
+                        .HasColumnType("nvarchar(5)");
+
+                    b.Property<bool>("EnableSignatureAlerts")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("RecipientsSeSuman")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("SignatureAlertDelay")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SignatureRecipients")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("TemplateID")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AlertConfigTemplates");
+                });
+
             modelBuilder.Entity("FormBuilder.API.Models.AlertConfiguration", b =>
                 {
                     b.Property<int>("Id")
@@ -91,6 +176,9 @@ namespace FormBuilder.API.Migrations
                     b.Property<bool>("EnableMissingFormAlerts")
                         .HasColumnType("bit");
 
+                    b.Property<bool>("EnableResumenCumplimiento")
+                        .HasColumnType("bit");
+
                     b.Property<bool>("EnableSignatureAlerts")
                         .HasColumnType("bit");
 
@@ -101,6 +189,22 @@ namespace FormBuilder.API.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("MissingFormRecipients")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("ResumenAResponsables")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("ResumenCadaHoras")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ResumenDiasAtras")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("ResumenIncluirFinDeSemana")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ResumenRecipients")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -125,6 +229,9 @@ namespace FormBuilder.API.Migrations
                     b.Property<string>("TemplateChangeRecipients")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("UltimoResumenCumplimiento")
+                        .HasColumnType("datetime2");
 
                     b.HasKey("Id");
 
@@ -402,6 +509,9 @@ namespace FormBuilder.API.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("FechaRegistro")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("FechaVersion")
                         .HasColumnType("datetime2");
 
@@ -490,6 +600,97 @@ namespace FormBuilder.API.Migrations
                     b.HasIndex("FormID");
 
                     b.ToTable("FilledFormChanges");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.FirmaCelda", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Anulada")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("AnuladaEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AnuladaPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Campo")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int?>("CatalogoFirmaID")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Codigo")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("nvarchar(12)");
+
+                    b.Property<bool>("ConImagen")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Correo")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<int?>("Fila")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FirmaImageUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("FirmadoEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FormId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Ip")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("NombreCompleto")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NumeroDocumento")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Puesto")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("TemplateId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TipoDocumento")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("TipoFirma")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("UsuarioSesion")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Codigo")
+                        .IsUnique();
+
+                    b.ToTable("FirmasCelda", (string)null);
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.FormDraft", b =>
@@ -730,6 +931,10 @@ namespace FormBuilder.API.Migrations
                     b.Property<int?>("FormId")
                         .HasColumnType("int");
 
+                    b.Property<string>("LoteDestino")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<int>("LoteInventarioId")
                         .HasColumnType("int");
 
@@ -757,6 +962,98 @@ namespace FormBuilder.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("MovimientosInventario");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.Novedad", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Activa")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CreadoPor")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CreadoPorNombre")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ImagenBase64")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Importancia")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Mensaje")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("MostrarAlEntrar")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Titulo")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("VisibleDesde")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("VisibleHasta")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Novedades");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.NovedadLectura", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("LeidaEn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("NombreUsuario")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("NovedadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Usuario")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NovedadId", "Usuario")
+                        .IsUnique();
+
+                    b.ToTable("NovedadesLecturas");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.PersonalRegistro", b =>
@@ -1084,6 +1381,14 @@ namespace FormBuilder.API.Migrations
                     b.Property<bool>("AutoSumColumns")
                         .HasColumnType("bit");
 
+                    b.Property<string>("AyudaNota")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("AyudaUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<string>("BodyElements")
                         .HasColumnType("nvarchar(max)");
 
@@ -1263,6 +1568,14 @@ namespace FormBuilder.API.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AsignadoAEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("AsignadoANombre")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<DateTime>("CreadoEn")
                         .HasColumnType("datetime2");
 
@@ -1298,6 +1611,53 @@ namespace FormBuilder.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Tickets");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.TicketRuta", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Activa")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ActualizadoPor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DestinatarioEmail")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("DestinatarioNombre")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UsuarioEmail")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("UsuarioNombre")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UsuarioEmail")
+                        .IsUnique();
+
+                    b.ToTable("TicketRutas");
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.TicketViewer", b =>
@@ -1364,6 +1724,15 @@ namespace FormBuilder.API.Migrations
                         .IsRequired();
 
                     b.Navigation("FilledForm");
+                });
+
+            modelBuilder.Entity("FormBuilder.API.Models.NovedadLectura", b =>
+                {
+                    b.HasOne("FormBuilder.API.Models.Novedad", null)
+                        .WithMany()
+                        .HasForeignKey("NovedadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("FormBuilder.API.Models.PersonalRegistro", b =>
