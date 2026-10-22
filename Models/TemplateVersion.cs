@@ -40,8 +40,15 @@ namespace FormBuilder.API.Models
         public string? QuienLoLlena { get; set; }
 
         // JSON strings de la estructura
+        // nvarchar(max) explícito: sin esto EF manda el parámetro como
+        // nvarchar(4000) y trunca el JSON de plantillas grandes.
+        [Column(TypeName = "nvarchar(max)")]
         public string? HeaderFields { get; set; }
+
+        [Column(TypeName = "nvarchar(max)")]
         public string? BodyElements { get; set; }
+
+        [Column(TypeName = "nvarchar(max)")]
         public string? Firmas { get; set; }
 
         // Metadata de la versión

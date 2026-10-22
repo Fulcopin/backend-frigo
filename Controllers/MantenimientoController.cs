@@ -1,3 +1,6 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using FormBuilder.API.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -195,6 +198,316 @@ namespace FormBuilder.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al aplicar mantenimiento quitar-25mmfe");
+                return StatusCode(500, new { message = "Error al aplicar el cambio", detalle = ex.Message });
+            }
+        }
+
+        // =====================================================================
+        // NOTAS ESTÁTICAS EN VERSIONES ANTERIORES
+        // =====================================================================
+        // Las notas estáticas son bloques de solo texto (referencias legales,
+        // declaraciones de etiqueta, etc.). Cuando se agregan a la plantilla,
+        // los registros viejos NO las muestran, porque cada uno guarda su copia
+        // congelada (TemplateSnapshot) y cada versión histórica tiene su propio
+        // BodyElements.
+        //
+        // Estos endpoints copian las notas de la versión actual hacia las
+        // versiones anteriores y hacia las copias congeladas de los registros.
+        // Nunca borran ni modifican datos capturados: solo agregan texto.
+        // =====================================================================
+
+        private static readonly JsonSerializerOptions JsonSinEscape = new()
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
+        /// <summary>Lee un BodyElements que puede venir como arreglo o como texto con JSON adentro.</summary>
+        private static List<JsonElement> ListaElementos(string? json)
+        {
+            var lista = new List<JsonElement>();
+            if (string.IsNullOrWhiteSpace(json)) return lista;
+
+            var texto = json;
+            for (int intento = 0; intento < 2; intento++)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(texto);
+                    var raiz = doc.RootElement;
+
+                    if (raiz.ValueKind == JsonValueKind.String)
+                    {
+                        texto = raiz.GetString() ?? string.Empty;
+                        continue;
+                    }
+
+                    if (raiz.ValueKind == JsonValueKind.Array)
+                        foreach (var el in raiz.EnumerateArray())
+                            lista.Add(el.Clone());
+
+                    return lista;
+                }
+                catch (JsonException)
+                {
+                    return lista;
+                }
+            }
+
+            return lista;
+        }
+
+        private static bool EsNotaEstatica(JsonElement el) =>
+            el.ValueKind == JsonValueKind.Object &&
+            el.TryGetProperty("type", out var tipo) &&
+            tipo.ValueKind == JsonValueKind.String &&
+            string.Equals(tipo.GetString(), "nota_estatica", StringComparison.OrdinalIgnoreCase);
+
+        private static string? IdDe(JsonElement el)
+        {
+            if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty("id", out var id)) return null;
+            return id.ValueKind switch
+            {
+                JsonValueKind.String => id.GetString(),
+                JsonValueKind.Number => id.GetRawText(),
+                _ => null
+            };
+        }
+
+        private static string? TituloDe(JsonElement el)
+        {
+            if (el.ValueKind != JsonValueKind.Object) return null;
+            foreach (var prop in new[] { "title", "titulo" })
+                if (el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String)
+                    return v.GetString();
+            return null;
+        }
+
+        /// <summary>Agrega al BodyElements las notas que todavía no estén (por id).</summary>
+        private static string? AgregarNotas(string? bodyJson, IReadOnlyList<JsonElement> notas, out int agregadas)
+        {
+            agregadas = 0;
+            if (string.IsNullOrWhiteSpace(bodyJson) || notas.Count == 0) return bodyJson;
+
+            var lista = ListaElementos(bodyJson);
+            if (lista.Count == 0) return bodyJson; // JSON dañado: no se toca
+
+            var existentes = new HashSet<string>();
+            foreach (var el in lista)
+            {
+                var id = IdDe(el);
+                if (id != null) existentes.Add(id);
+            }
+
+            foreach (var nota in notas)
+            {
+                var id = IdDe(nota);
+                if (id == null || !existentes.Add(id)) continue;
+                lista.Add(nota);
+                agregadas++;
+            }
+
+            return agregadas == 0 ? bodyJson : JsonSerializer.Serialize(lista, JsonSinEscape);
+        }
+
+        /// <summary>Agrega las notas dentro de la propiedad BodyElements de un TemplateSnapshot.</summary>
+        private static string? AgregarNotasASnapshot(string? snapshot, IReadOnlyList<JsonElement> notas, out int agregadas)
+        {
+            agregadas = 0;
+            if (string.IsNullOrWhiteSpace(snapshot) || notas.Count == 0) return snapshot;
+
+            JsonNode? nodo;
+            try
+            {
+                nodo = JsonNode.Parse(snapshot);
+            }
+            catch (JsonException)
+            {
+                return snapshot;
+            }
+
+            if (nodo is not JsonObject obj) return snapshot;
+
+            var clave = obj.Select(kv => kv.Key)
+                .FirstOrDefault(k => string.Equals(k, "BodyElements", StringComparison.OrdinalIgnoreCase));
+            if (clave == null) return snapshot;
+
+            var valor = obj[clave];
+            var texto = valor is JsonValue v && v.TryGetValue<string>(out var s)
+                ? s
+                : valor?.ToJsonString(JsonSinEscape);
+            if (string.IsNullOrWhiteSpace(texto)) return snapshot;
+
+            var nuevo = AgregarNotas(texto, notas, out agregadas);
+            if (agregadas == 0 || nuevo == null) return snapshot;
+
+            obj[clave] = JsonValue.Create(nuevo);
+            return obj.ToJsonString(JsonSinEscape);
+        }
+
+        private static List<JsonElement> NotasDe(string? bodyElements) =>
+            ListaElementos(bodyElements).Where(EsNotaEstatica).ToList();
+
+        /// <summary>Ids de las notas que le faltan a un BodyElements.</summary>
+        private static List<string> NotasFaltantes(string? bodyJson, IReadOnlyList<JsonElement> notas)
+        {
+            var existentes = new HashSet<string>();
+            foreach (var el in ListaElementos(bodyJson))
+            {
+                var id = IdDe(el);
+                if (id != null) existentes.Add(id);
+            }
+
+            return notas
+                .Select(IdDe)
+                .Where(id => id != null && !existentes.Contains(id))
+                .Select(id => id!)
+                .ToList();
+        }
+
+        // ---------------------------------------------------------------------
+        // GET /api/Mantenimiento/notas-faltantes?codigo=FOR-CC-07
+        // SOLO LEE. Muestra qué notas le faltan a cada versión y a los registros.
+        // ---------------------------------------------------------------------
+        [HttpGet("notas-faltantes")]
+        public async Task<ActionResult> NotasFaltantesPreview([FromQuery] string codigo = "FOR-CC-07")
+        {
+            var template = await _context.Templates.AsNoTracking()
+                .FirstOrDefaultAsync(t => t.Codigo == codigo);
+            if (template == null)
+                return NotFound(new { message = $"No se encontró ninguna plantilla con código '{codigo}'." });
+
+            var notas = NotasDe(template.BodyElements);
+
+            var versiones = await _context.TemplateVersions.AsNoTracking()
+                .Where(v => v.TemplateID == template.TemplateID)
+                .OrderBy(v => v.Version)
+                .ToListAsync();
+
+            var detalleVersiones = versiones.Select(v => new
+            {
+                version = v.Version,
+                esActual = v.Version == template.Version,
+                elementos = ListaElementos(v.BodyElements).Count,
+                notasFaltantes = NotasFaltantes(v.BodyElements, notas).Count
+            }).ToList();
+
+            var forms = await _context.FilledForms.AsNoTracking()
+                .Where(f => f.TemplateID == template.TemplateID &&
+                            f.TemplateSnapshot != null && f.TemplateSnapshot != "")
+                .ToListAsync();
+
+            var sinNotas = 0;
+            var porVersion = new Dictionary<string, int>();
+            foreach (var f in forms)
+            {
+                AgregarNotasASnapshot(f.TemplateSnapshot, notas, out var agregadas);
+                if (agregadas == 0) continue;
+                sinNotas++;
+                var clave = string.IsNullOrWhiteSpace(f.TemplateVersion) ? "(sin versión)" : f.TemplateVersion!;
+                porVersion[clave] = porVersion.GetValueOrDefault(clave) + 1;
+            }
+
+            return Ok(new
+            {
+                codigo,
+                templateId = template.TemplateID,
+                versionActual = template.Version,
+                notas = notas.Select(n => new { id = IdDe(n), titulo = TituloDe(n) }),
+                versiones = detalleVersiones,
+                registros = new
+                {
+                    total = forms.Count,
+                    sinNotas,
+                    porVersion
+                },
+                mensaje = "Vista previa: NO se cambió nada. Para aplicar, haz POST a /api/Mantenimiento/copiar-notas-versiones?codigo=" + codigo
+            });
+        }
+
+        // ---------------------------------------------------------------------
+        // POST /api/Mantenimiento/copiar-notas-versiones?codigo=FOR-CC-07
+        // APLICA el cambio: copia las notas estáticas de la versión actual a las
+        // versiones históricas y a las copias congeladas de los registros.
+        // ---------------------------------------------------------------------
+        [HttpPost("copiar-notas-versiones")]
+        public async Task<ActionResult> CopiarNotasVersiones([FromQuery] string codigo = "FOR-CC-07")
+        {
+            try
+            {
+                var template = await _context.Templates
+                    .FirstOrDefaultAsync(t => t.Codigo == codigo);
+                if (template == null)
+                    return NotFound(new { message = $"No se encontró ninguna plantilla con código '{codigo}'." });
+
+                var notas = NotasDe(template.BodyElements);
+                if (notas.Count == 0)
+                    return BadRequest(new { message = $"La plantilla '{codigo}' no tiene notas estáticas para copiar." });
+
+                var detalleVersiones = new List<object>();
+                int versionesCambiadas = 0;
+                int notasEnVersiones = 0;
+
+                var versiones = await _context.TemplateVersions
+                    .Where(v => v.TemplateID == template.TemplateID)
+                    .ToListAsync();
+
+                foreach (var v in versiones)
+                {
+                    // Idempotente: si la versión ya tiene todas las notas, no se toca.
+                    var nuevo = AgregarNotas(v.BodyElements, notas, out var agregadas);
+                    if (agregadas == 0) continue;
+
+                    v.BodyElements = nuevo;
+                    versionesCambiadas++;
+                    notasEnVersiones += agregadas;
+                    detalleVersiones.Add(new { version = v.Version, notasAgregadas = agregadas });
+                }
+
+                int registrosCambiados = 0;
+                int notasEnRegistros = 0;
+                var porVersion = new Dictionary<string, int>();
+
+                var forms = await _context.FilledForms
+                    .Where(f => f.TemplateID == template.TemplateID &&
+                                f.TemplateSnapshot != null && f.TemplateSnapshot != "")
+                    .ToListAsync();
+
+                foreach (var f in forms)
+                {
+                    var nuevo = AgregarNotasASnapshot(f.TemplateSnapshot, notas, out var agregadas);
+                    if (agregadas == 0) continue;
+
+                    f.TemplateSnapshot = nuevo;
+                    registrosCambiados++;
+                    notasEnRegistros += agregadas;
+
+                    var clave = string.IsNullOrWhiteSpace(f.TemplateVersion) ? "(sin versión)" : f.TemplateVersion!;
+                    porVersion[clave] = porVersion.GetValueOrDefault(clave) + 1;
+                }
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation(
+                    "Mantenimiento copiar-notas-versiones {Codigo}: {V} versiones (+{NV} notas), {R} registros (+{NR} notas)",
+                    codigo, versionesCambiadas, notasEnVersiones, registrosCambiados, notasEnRegistros);
+
+                return Ok(new
+                {
+                    success = true,
+                    codigo,
+                    notasDisponibles = notas.Count,
+                    versionesCambiadas,
+                    notasEnVersiones,
+                    detalleVersiones,
+                    registrosCambiados,
+                    notasEnRegistros,
+                    porVersion,
+                    mensaje = "Listo. Las notas estáticas ya están en las versiones anteriores y en los registros existentes."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al copiar notas a versiones anteriores");
                 return StatusCode(500, new { message = "Error al aplicar el cambio", detalle = ex.Message });
             }
         }
