@@ -71,6 +71,58 @@ namespace FormBuilder.API.Controllers
             return Ok(drafts);
         }
 
+        // ── BORRADORES PENDIENTES, PARA EL AVISO DE COSTOS ──────────────────
+        /// <summary>
+        /// Los borradores que todavía NO se convirtieron en formulario, en la
+        /// forma mínima que necesita el aviso de Inicio: qué formulario es,
+        /// quién lo está llenando y su encabezado (de ahí sale la fecha que
+        /// escribió el operario, no la de guardado).
+        ///
+        /// Por defecto solo los PD, que son los que le importan a Costos.
+        /// El front puede pedir todos con soloPD=false.
+        ///
+        /// GET api/FormDrafts/pendientes?soloPD=true
+        /// </summary>
+        [HttpGet("pendientes")]
+        public async Task<ActionResult<IEnumerable<object>>> GetDraftsPendientes(
+            [FromQuery] bool soloPD = true)
+        {
+            var query = _context.FormDrafts
+                .AsNoTracking()
+                .Where(d => d.IsActive && d.ExpiresAt > DateTime.Now);
+
+            if (soloPD)
+            {
+                // Los códigos vienen como FOR-PD-15 (y a veces PD-04), así que
+                // alcanza con mirar el arranque: no se toca FilledForms.
+                query = query.Where(d => d.TemplateCodigo != null &&
+                    (d.TemplateCodigo.ToUpper().StartsWith("FOR-PD") ||
+                     d.TemplateCodigo.ToUpper().StartsWith("PD")));
+            }
+
+            var drafts = await query
+                .OrderBy(d => d.TemplateCodigo)
+                .ThenByDescending(d => d.UpdatedAt)
+                .Select(d => new
+                {
+                    d.DraftID,
+                    d.TemplateID,
+                    d.TemplateName,
+                    d.TemplateCodigo,
+                    d.UserName,
+                    d.UserEmail,
+                    d.UserRole,
+                    d.HeaderData,
+                    d.Progress,
+                    d.CreatedAt,
+                    d.UpdatedAt,
+                    DaysLeft = (d.ExpiresAt - DateTime.Now).Days
+                })
+                .ToListAsync();
+
+            return Ok(drafts);
+        }
+
         // GET: api/FormDrafts — Todos los borradores activos (para admin)
         [HttpGet]
         public async Task<ActionResult<IEnumerable<object>>> GetAllDrafts()
