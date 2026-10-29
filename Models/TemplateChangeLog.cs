@@ -20,7 +20,9 @@ namespace FormBuilder.API.Models
         public string Version { get; set; } = string.Empty;
 
         [Required]
-        [MaxLength(1000)]
+        // Sin [MaxLength]: el historial admite textos largos (nvarchar(max)).
+        // Antes era 1000 y al guardar una descripción larga el POST fallaba con
+        // un error de truncamiento que el navegador mostraba como "Failed to fetch".
         public string CambioRealizado { get; set; } = string.Empty;
 
         public DateTime CreatedAt { get; set; } = DateTime.Now;
