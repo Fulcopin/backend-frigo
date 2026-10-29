@@ -92,4 +92,23 @@ app.UseAuthorization();                  // 4️⃣ Autorización
 app.MapOpenApi();                        // 4️⃣ /openapi/v1.json (contrato de la API)
 app.MapControllers();                    // 5️⃣ Controladores al final
 
+// --- Parche de esquema (idempotente) ---
+// TemplateChangeLogs.CambioRealizado nacio como nvarchar(1000): al guardar una
+// descripcion mas larga el INSERT fallaba y el navegador mostraba "Failed to
+// fetch". Se amplia a nvarchar(max) al arrancar para no depender de correr el
+// script SQL a mano. Si el usuario de SQL no puede alterar la tabla, se deja
+// una advertencia en el log y la API sigue funcionando igual.
+try
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    db.Database.ExecuteSqlRaw(
+        "IF COL_LENGTH('dbo.TemplateChangeLogs','CambioRealizado') BETWEEN 1 AND 8000 " +
+        "ALTER TABLE dbo.TemplateChangeLogs ALTER COLUMN CambioRealizado nvarchar(max) NOT NULL;");
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "No se pudo ampliar TemplateChangeLogs.CambioRealizado a nvarchar(max)");
+}
+
 app.Run();
