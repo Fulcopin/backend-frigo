@@ -1549,6 +1549,22 @@ namespace FormBuilder.API.Controllers
             return roles;
         }
 
+        /// <summary>
+        /// Nombre base de una columna: quita el sufijo de duplicado que agrega
+        /// el formulario cuando hay dos columnas con el mismo nombre
+        /// (ej. "PERSONAL EXTERNO_col3" → "PERSONAL EXTERNO").
+        /// Se usa para que una misma columna no se sume dos veces en el reporte.
+        /// </summary>
+        private static string BaseDeColumna(string nombre)
+        {
+            var n = (nombre ?? "").Trim();
+            n = System.Text.RegularExpressions.Regex.Replace(
+                n, @"_col\d+$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            n = System.Text.RegularExpressions.Regex.Replace(
+                n, @"_T\d+$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return n;
+        }
+
                 // ── Personal propio vs contratado ────────────────────────────────
         //
         // Cada formato lo nombra distinto y con solo "PLANTA" y "EXTERNO" se
@@ -1669,9 +1685,15 @@ namespace FormBuilder.API.Controllers
                     string? obs = null, proc = null;
                     bool esInicio = false, esCierre = false;
 
+                    // Evita sumar dos veces la misma columna cuando la fila trae
+                    // la clave base y una variante con sufijo _colN.
+                    var contadosExterno = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var contadosPlanta = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                     foreach (var prop in fila.EnumerateObject())
                     {
                         var nombre = prop.Name;
+                        var baseNombre = BaseDeColumna(nombre);
 
                         // ── 1º: el rol declarado en la plantilla ──────────
                         var rol = RolDe(nombre);
@@ -1679,8 +1701,12 @@ namespace FormBuilder.API.Controllers
                         {
                             switch (rol)
                             {
-                                case "personalPropio":      planta  += ParseEntero(prop.Value); continue;
-                                case "personalContratado":  externo += ParseEntero(prop.Value); continue;
+                                case "personalPropio":
+                                    if (contadosPlanta.Add(baseNombre)) planta += ParseEntero(prop.Value);
+                                    continue;
+                                case "personalContratado":
+                                    if (contadosExterno.Add(baseNombre)) externo += ParseEntero(prop.Value);
+                                    continue;
                                 case "horaInicio":          ini = ParseHora(prop.Value) ?? ini; continue;
                                 case "horaFin":             fin = ParseHora(prop.Value) ?? fin; continue;
                                 case "pesoProducido":
@@ -1716,9 +1742,13 @@ namespace FormBuilder.API.Controllers
                         // contiene las dos ideas, y esa palabra es la que define
                         // de qué personal se trata.
                         if (RxExterno.IsMatch(nombre))
-                            externo += ParseEntero(prop.Value);
+                        {
+                            if (contadosExterno.Add(baseNombre)) externo += ParseEntero(prop.Value);
+                        }
                         else if (RxPlanta.IsMatch(nombre))
-                            planta += ParseEntero(prop.Value);
+                        {
+                            if (contadosPlanta.Add(baseNombre)) planta += ParseEntero(prop.Value);
+                        }
                         else if (RxHoraInicio.IsMatch(nombre))
                             ini = ParseHora(prop.Value) ?? ini;
                         else if (RxHoraFin.IsMatch(nombre))
@@ -1773,6 +1803,14 @@ namespace FormBuilder.API.Controllers
                     // ("de 10 a 11 paró la máquina").
                     if (!hayPersonal && !hayPeso && string.IsNullOrWhiteSpace(obs))
                         continue;
+
+                    // 🔎 Diagnóstico temporal: si el externo sale duplicado, esto
+                    // muestra las claves reales de la fila en el log del API.
+                    if (externo > 0)
+                    {
+                        Console.WriteLine($"[PERSONAL-DEBUG] FormID={form.FormID} externo={externo} planta={planta} | " +
+                            string.Join(" | ", fila.EnumerateObject().Select(p => $"{p.Name}={p.Value}")));
+                    }
 
                     filasPersonal.Add((ini, fin, planta, externo, peso, obs, proc, esInicio, esCierre));
                 }

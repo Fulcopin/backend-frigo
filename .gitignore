@@ -108,3 +108,7 @@ yarn-error.log*
 *.user
 *.suo
 .vs/
+# Salida de publicacion (dotnet publish): no va al repositorio
+publish/
+publishç/
+

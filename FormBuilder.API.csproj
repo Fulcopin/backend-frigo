@@ -22,4 +22,20 @@
     <PackageReference Include="QuestPDF" Version="2025.12.0" />
   </ItemGroup>
 
+  <!-- Carpetas que NO son código ni contenido de la API y no tienen por qué
+       viajar al servidor: salidas de publicación ("publish"), una carpeta con
+       error de tipeo en el nombre ("publishç") y material de pruebas local.
+       Sin esto se copiaban dentro del publish y el despliegue llevaba basura. -->
+  <ItemGroup>
+    <Content Remove="publish\**" />
+    <None Remove="publish\**" />
+    <Compile Remove="publish\**" />
+    <Content Remove="publishç\**" />
+    <None Remove="publishç\**" />
+    <Compile Remove="publishç\**" />
+    <Content Remove="pruebas\**" />
+    <None Remove="pruebas\**" />
+    <Compile Remove="pruebas\**" />
+  </ItemGroup>
+
 </Project>

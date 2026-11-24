@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using FormBuilder.API.Data;
 using FormBuilder.API.Models;
@@ -1173,6 +1173,26 @@ public async Task<ActionResult<object>> GetErpReport(
         /// Las claves internas (las que empiezan con "_", como _deleted o
         /// _rowSpan) no son datos del operario y se ignoran.
         /// </summary>
+        /// <summary>
+        /// Nombre base de una celda: quita el sufijo de duplicado que agrega el
+        /// formulario cuando hay dos columnas con el mismo nombre
+        /// (ej. "PERSONAL EXTERNO_col3" → "PERSONAL EXTERNO"). Así el historial
+        /// no cuenta dos veces la misma celda como si se hubieran editado todas.
+        /// </summary>
+        private static string BaseDeColumnaAudit(string nombre)
+        {
+            var n = nombre ?? "";
+            // Espacios de más: "LOTE " y "LOTE" son la MISMA celda. Sin esto, el
+            // historial mostraba la celda como "antes: (vacío)" y otra vez con el
+            // valor, como si el operario hubiera borrado y vuelto a escribir.
+            n = System.Text.RegularExpressions.Regex.Replace(n, @"\s+", " ").Trim();
+            n = System.Text.RegularExpressions.Regex.Replace(
+                n, @"_col\d+$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            n = System.Text.RegularExpressions.Regex.Replace(
+                n, @"_T\d+$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return n;
+        }
+
         private static Dictionary<string, string> AplanarValores(string? headerJson, string? bodyJson)
         {
             var plano = new Dictionary<string, string>();
@@ -1224,7 +1244,13 @@ public async Task<ActionResult<object>> GetErpReport(
                         {
                             elemIdx++;
                             if (elemento.ValueKind != JsonValueKind.Object) continue;
-                            if (!elemento.TryGetProperty("data", out var data)) continue;
+                            // El cuerpo puede venir con "data" (formato actual) o
+                            // "rows" (formato viejo). Si solo se mira "data", un
+                            // formulario viejo se aplana vacío y el historial
+                            // marca TODAS las celdas como "antes: (vacío)".
+                            if (!elemento.TryGetProperty("data", out var data)
+                                && !elemento.TryGetProperty("rows", out data))
+                                continue;
 
                             if (data.ValueKind == JsonValueKind.Array)
                             {
@@ -1237,7 +1263,9 @@ public async Task<ActionResult<object>> GetErpReport(
                                     foreach (var celda in fila.EnumerateObject())
                                     {
                                         if (EsInterna(celda.Name) || !EsEscalar(celda.Value)) continue;
-                                        plano[$"b:{elemIdx}:{filaIdx}:{celda.Name}"] = Texto(celda.Value);
+                                        // Se compara por el nombre base: una columna duplicada
+                                        // ("X" y "X_col3") es la MISMA celda, no dos cambios.
+                                        plano[$"b:{elemIdx}:{filaIdx}:{BaseDeColumnaAudit(celda.Name)}"] = Texto(celda.Value);
                                     }
                                 }
                             }
@@ -1435,7 +1463,17 @@ public async Task<ActionResult<object>> GetErpReport(
                 return Ok(new { formId = id, totalTandas = 0, totalCambios = 0, tandas = Array.Empty<object>() });
             }
 
-            var tandas = filas.Select(c =>
+            // 🧹 Tandas sin NINGÚN valor anterior: cuando la comparación no tiene
+            // de dónde leer el "antes" (el cuerpo guardado venía ilegible, o las
+            // celdas estaban guardadas con otro nombre), TODAS las celdas quedan
+            // como "antes: (vacío)". Eso no es una edición del operario: es una
+            // foto que salió vacía, y en pantalla se veía "este reporte fue
+            // modificado — 211 valores" con el ✏️ en todas las celdas de un
+            // formulario que nadie tocó. Se descarta la tanda entera.
+            var tandas = new List<object>();
+            int totalCambiosVisibles = 0;
+
+            foreach (var c in filas)
             {
                 List<CambioValorDto> detalle;
                 try
@@ -1446,7 +1484,12 @@ public async Task<ActionResult<object>> GetErpReport(
                 }
                 catch (JsonException) { detalle = new List<CambioValorDto>(); }
 
-                return new
+                if (detalle.Count > 0 && detalle.All(d => string.IsNullOrWhiteSpace(d.Antes)))
+                    continue;
+
+                totalCambiosVisibles += detalle.Count;
+
+                tandas.Add(new
                 {
                     id = c.Id,
                     changedBy = c.ChangedBy,
@@ -1454,16 +1497,16 @@ public async Task<ActionResult<object>> GetErpReport(
                     changedByRole = c.ChangedByRole,
                     changedAt = c.ChangedAt,
                     updatedAt = c.UpdatedAt,
-                    totalCambios = c.TotalCambios,
+                    totalCambios = detalle.Count,
                     cambios = detalle
-                };
-            }).ToList();
+                });
+            }
 
             return Ok(new
             {
                 formId = id,
                 totalTandas = tandas.Count,
-                totalCambios = tandas.Sum(t => t.totalCambios),
+                totalCambios = totalCambiosVisibles,
                 tandas
             });
         }

@@ -47,6 +47,12 @@ namespace FormBuilder.API.Data
         // Cómo se arma el reporte de "Descargar Datos" de cada formulario
         public DbSet<ConfiguracionReporte> ConfiguracionesReporte { get; set; }
 
+        // ✅ NUEVO: horarios de turno (DÍA/NOCHE) que usan los bloqueos del formulario
+        public DbSet<ConfiguracionHorario> ConfiguracionHorarios { get; set; }
+
+        // 📚 Biblioteca de bloques reutilizables (secciones, tablas, etc.)
+        public DbSet<BloqueReutilizable> BloquesReutilizables { get; set; }
+
         // NUEVO: Planificador dinámico de producción
         public DbSet<ProductionPlan> ProductionPlans { get; set; }
 

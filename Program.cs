@@ -111,4 +111,57 @@ catch (Exception ex)
     app.Logger.LogWarning(ex, "No se pudo ampliar TemplateChangeLogs.CambioRealizado a nvarchar(max)");
 }
 
+// --- Parche: tabla de configuración de horarios de turno (idempotente) ---
+// Los bloqueos del formulario comparan el turno del encabezado contra estos
+// rangos. Se crea al arrancar para no depender de correr el script a mano.
+try
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    db.Database.ExecuteSqlRaw(@"
+IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ConfiguracionHorarios' AND xtype='U')
+BEGIN
+    CREATE TABLE [dbo].[ConfiguracionHorarios] (
+        [Id] INT IDENTITY(1,1) NOT NULL,
+        [TurnoDiaInicio]   NVARCHAR(5)   NOT NULL DEFAULT '06:00',
+        [TurnoDiaFin]      NVARCHAR(5)   NOT NULL DEFAULT '17:00',
+        [TurnoNocheInicio] NVARCHAR(5)   NOT NULL DEFAULT '17:00',
+        [TurnoNocheFin]    NVARCHAR(5)   NOT NULL DEFAULT '05:59',
+        [ActualizadoPor]   NVARCHAR(200) NULL,
+        [ActualizadoEn]    DATETIME2     NULL,
+        CONSTRAINT [PK_ConfiguracionHorarios] PRIMARY KEY CLUSTERED ([Id] ASC)
+    );
+END");
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "No se pudo crear la tabla ConfiguracionHorarios");
+}
+
+// --- Parche: biblioteca de bloques reutilizables (idempotente) ---
+// El editor guarda secciones completas (Control del Personal, procesos, etc.)
+// para reutilizarlas en cualquier plantilla.
+try
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    db.Database.ExecuteSqlRaw(@"
+IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='BloquesReutilizables' AND xtype='U')
+BEGIN
+    CREATE TABLE [dbo].[BloquesReutilizables] (
+        [Id]         INT IDENTITY(1,1) NOT NULL,
+        [Nombre]     NVARCHAR(200)  NOT NULL,
+        [Tipo]       NVARCHAR(50)   NOT NULL DEFAULT 'section',
+        [Contenido]  NVARCHAR(MAX)  NOT NULL DEFAULT '{}',
+        [CreadoPor]  NVARCHAR(200)  NULL,
+        [CreadoEn]   DATETIME2      NOT NULL DEFAULT GETDATE(),
+        CONSTRAINT [PK_BloquesReutilizables] PRIMARY KEY CLUSTERED ([Id] ASC)
+    );
+END");
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "No se pudo crear la tabla BloquesReutilizables");
+}
+
 app.Run();
