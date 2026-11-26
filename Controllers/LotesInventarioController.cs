@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 using System.Text.Json;
@@ -238,21 +238,49 @@ namespace FormBuilder.API.Controllers
 
             var ahora = DateTime.UtcNow;
             var creados = new List<LoteInventario>();
+            var actualizados = new List<LoteInventario>();
 
             foreach (var d in dto.Lotes)
             {
                 if (string.IsNullOrWhiteSpace(d.NumeroLote) || string.IsNullOrWhiteSpace(d.Proceso))
                     continue;
 
-                // Saltar duplicados silenciosamente
-                var existe = await _context.LotesInventario
-                    .AnyAsync(l => l.NumeroLote == d.NumeroLote);
-                if (existe) continue;
+                var numero = d.NumeroLote.Trim();
+                var pesoNetoNuevo = Math.Max(0, d.PesoEntrada - d.Desperdicio);
 
-                var pesoNeto = Math.Max(0, d.PesoEntrada - d.Desperdicio);
+                // Ya existe: no se duplica. Pero si entró en 0 (la tabla no tenía
+                // todavía la columna de peso configurada, o se guardó antes de
+                // corregirla) quedaba en 0.00 PARA SIEMPRE: el formulario se
+                // volvía a guardar y el lote seguía sin saldo, y el proceso que
+                // lo consume decía "no tiene disponible". Mientras el lote esté
+                // intacto —sin saldo y sin consumo— se le corrige el peso.
+                var existente = await _context.LotesInventario.FirstOrDefaultAsync(l => l.NumeroLote == numero);
+                if (existente != null)
+                {
+                    var intacto = existente.Saldo <= 0 && existente.PesoNeto <= 0;
+                    if (intacto && pesoNetoNuevo > 0)
+                    {
+                        existente.PesoEntrada = d.PesoEntrada;
+                        existente.Desperdicio = d.Desperdicio;
+                        existente.TipoDesperdicio = d.TipoDesperdicio?.Trim() ?? existente.TipoDesperdicio;
+                        existente.PesoNeto = pesoNetoNuevo;
+                        existente.Saldo = pesoNetoNuevo;
+                        if (string.IsNullOrWhiteSpace(existente.Producto)) existente.Producto = d.Producto?.Trim();
+                        if (string.IsNullOrWhiteSpace(existente.Clasificacion)) existente.Clasificacion = d.Clasificacion?.Trim();
+                        if (string.IsNullOrWhiteSpace(existente.LotePadre)) existente.LotePadre = d.LotePadre?.Trim();
+                        if (string.IsNullOrWhiteSpace(existente.TemplateId)) existente.TemplateId = d.TemplateId?.Trim();
+                        existente.FormId ??= d.FormId;
+                        existente.Fecha ??= d.Fecha ?? ahora.Date;
+                        existente.ActualizadoEn = ahora;
+                        actualizados.Add(existente);
+                    }
+                    continue;
+                }
+
+                var pesoNeto = pesoNetoNuevo;
                 var lote = new LoteInventario
                 {
-                    NumeroLote = d.NumeroLote.Trim(),
+                    NumeroLote = numero,
                     Proceso = d.Proceso.Trim(),
                     Producto = d.Producto?.Trim(),
                     Clasificacion = d.Clasificacion?.Trim(),
@@ -287,7 +315,15 @@ namespace FormBuilder.API.Controllers
             }
 
             await _context.SaveChangesAsync();
-            return Ok(new { creados = creados.Count, lotes = creados });
+            return Ok(new
+            {
+                creados = creados.Count,
+                actualizados = actualizados.Count,
+                lotes = creados,
+                // Lo que existía con 0 y acá se le puso el peso. El front lo usa
+                // para refrescar el inventario y avisar en el resumen.
+                lotesActualizados = actualizados
+            });
         }
 
         // ── PUT /api/LotesInventario/{id} ──────────────────────────────────────
